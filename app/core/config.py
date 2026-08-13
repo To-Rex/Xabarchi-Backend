@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     )
 
     app_env: str = "development"
+    # Port the server binds to (used by ``python -m app`` and deploys).
+    port: int = 8000
     database_url: str
     redis_url: str
     jwt_secret: str

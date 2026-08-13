@@ -58,19 +58,42 @@ cp .env.example .env                 # qiymatlarni to'g'rilang
 # 4. Migratsiyalar (PostgreSQL 15+ kerak)
 alembic upgrade head
 
-# 5. Server
+# 5. Server (dev, hot-reload)
 uvicorn app.main:app --reload --port 8000
+
+# yoki production kabi: migratsiyalarni qo'llab, .env'dagi PORT bilan
+python -m app
 ```
 
 Swagger UI: <http://localhost:8000/docs> · Health: `GET /healthz` · Readiness: `GET /readyz`
 
 Testlar: `pytest tests/` (infra talab qilmaydi — smoke test DB/Redis'siz o'tadi).
 
+## Deploy (Dokploy / Railpack)
+
+Repo ildizidagi [`railpack.json`](railpack.json) Dokploy'ga buildni Railpack
+bilan qilishni aytadi: Python 3.12, `requirements.txt` o'rnatiladi, start
+komandasi — `python -m app`. Bu komanda:
+
+1. avval `alembic upgrade head` ni bajaradi (yangi migratsiya bo'lsa qo'llaydi,
+   xato bo'lsa nolga teng bo'lmagan kod bilan chiqadi — deploy fail bo'ladi);
+2. keyin serverni `0.0.0.0:{PORT}` da ko'taradi (`PORT` env/.env'dan, default 8000).
+
+Dokploy'da qilinadigan ishlar:
+
+- Environment bo'limiga `.env`dagi barcha qiymatlarni kiriting (`DATABASE_URL`,
+  `REDIS_URL`, `JWT_SECRET`, `PORT`, `CORS_ORIGINS` — production frontend
+  domenini ham qo'shing, `FRONTEND_URL`, `PUBLIC_API_URL` va h.k.).
+- Health check: `GET /healthz` (liveness) yoki `GET /readyz` (DB+Redis bilan).
+- Git push → avtomatik deploy. Docker bilan deploy qilinsa ham xuddi shu
+  `python -m app` ishlaydi (Dockerfile saqlangan).
+
 ## .env
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `APP_ENV` | `development` | `production` da log darajasi INFO bo'ladi |
+| `PORT` | `8000` | `python -m app` / deploy shu portda ishlaydi |
 | `DATABASE_URL` | — (majburiy) | `postgresql://...` — asyncpg dialektiga avtomatik o'giriladi |
 | `REDIS_URL` | — (majburiy) | pub/sub va rate limiting uchun |
 | `JWT_SECRET` | — (majburiy) | HS256 imzo kaliti (64+ tasodifiy belgi) |
@@ -80,6 +103,13 @@ Testlar: `pytest tests/` (infra talab qilmaydi — smoke test DB/Redis'siz o'tad
 | `CORS_ORIGINS` | `http://localhost:5173` | vergul bilan ajratilgan ro'yxat |
 | `GATEWAY_LEASE_SECONDS` | `120` | device claim lease muddati |
 | `GATEWAY_CLAIM_MAX` | `100` | bitta claim'dagi maksimal xabarlar soni |
+| `FRONTEND_URL` | `http://localhost:5173` | e-mail havolalari, OAuth va checkout redirectlari |
+| `PUBLIC_API_URL` | `http://localhost:8000` | OAuth callback URL'ini qurishda |
+| `GOOGLE_CLIENT_ID/SECRET`, `APPLE_CLIENT_ID/SECRET` | bo'sh | social auth (bo'sh — o'chik) |
+| `SMTP_HOST/PORT/USER/PASSWORD/FROM` | bo'sh | bo'sh bo'lsa xatlar logga yoziladi (dev) |
+| `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET` | bo'sh | Polar billing (bo'sh — o'chik) |
+| `POLAR_SERVER` | `sandbox` | `sandbox` / `production` |
+| `POLAR_PRODUCT_BIZNES`, `POLAR_PRODUCT_KORXONA` | bo'sh | tarif → Polar product xaritasi |
 
 ## Endpoints
 
