@@ -78,6 +78,15 @@ class ResetPasswordIn(CamelModel):
     password: str = Field(min_length=8, max_length=128)
 
 
+class ResendVerificationIn(CamelModel):
+    email: str = Field(max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def _lower_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
 class VerifyEmailIn(CamelModel):
     token: str = Field(min_length=16, max_length=64)
 

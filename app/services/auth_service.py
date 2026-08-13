@@ -42,8 +42,12 @@ def _token_pair(user_id: uuid.UUID) -> TokenPair:
     )
 
 
-async def register(session: AsyncSession, data: RegisterIn) -> tuple[User, TokenPair]:
-    """Create an account on the free plan and issue the first token pair."""
+async def register(session: AsyncSession, data: RegisterIn) -> User:
+    """Create an account on the free plan and send the verification e-mail.
+
+    No session is issued: the user must confirm their address (via the e-mailed
+    link) before they can sign in — this is what proves the e-mail is theirs.
+    """
     existing = await user_repo.get_by_email(session, data.email)
     if existing is not None:
         raise AppError("Email is already registered", code="email_taken", status=409)
@@ -57,7 +61,7 @@ async def register(session: AsyncSession, data: RegisterIn) -> tuple[User, Token
         company=data.company,
     )
     await send_verification_email(user)
-    return user, _token_pair(user.id)
+    return user
 
 
 async def login(session: AsyncSession, data: LoginIn) -> tuple[User, TokenPair]:
@@ -68,6 +72,13 @@ async def login(session: AsyncSession, data: LoginIn) -> tuple[User, TokenPair]:
     ):
         # One message for both cases — never reveal whether the email exists.
         raise AuthError("Invalid email or password")
+    # The e-mail must be confirmed before the account can be used.
+    if user.email_verified_at is None:
+        raise AppError(
+            "Please verify your e-mail before signing in",
+            code="email_not_verified",
+            status=403,
+        )
     return user, _token_pair(user.id)
 
 
@@ -146,6 +157,15 @@ async def send_verification_email(user: User) -> None:
         await email_service.send_email(user.email, "Xabarchi — e-mailni tasdiqlang", html, text)
     except Exception:  # noqa: BLE001 - mail is best-effort, auth flow is not
         logger.exception("Could not queue verification e-mail for %s", user.email)
+
+
+async def resend_verification(session: AsyncSession, email: str) -> None:
+    """Re-send the verification mail. Silent about whether the account exists
+    (or is already verified) so the endpoint can't be used to probe e-mails."""
+    user = await user_repo.get_by_email(session, email)
+    if user is None or user.email_verified_at is not None:
+        return
+    await send_verification_email(user)
 
 
 async def verify_email(session: AsyncSession, token: str) -> User:

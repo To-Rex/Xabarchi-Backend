@@ -17,6 +17,7 @@ from app.schemas.auth import (
     MessageOut,
     RefreshIn,
     RegisterIn,
+    ResendVerificationIn,
     ResetPasswordIn,
     TokenPair,
     UserOut,
@@ -37,14 +38,12 @@ class AuthOut(CamelModel):
     refresh_token: str
 
 
-@router.post("/register", response_model=AuthOut, status_code=status.HTTP_201_CREATED)
-async def register(session: DbSession, body: RegisterIn) -> AuthOut:
-    user, tokens = await auth_service.register(session, body)
-    return AuthOut(
-        user=UserOut.model_validate(user),
-        access_token=tokens.access_token,
-        refresh_token=tokens.refresh_token,
-    )
+@router.post("/register", response_model=MessageOut, status_code=status.HTTP_201_CREATED)
+async def register(session: DbSession, body: RegisterIn) -> MessageOut:
+    """Create the account and e-mail a verification link. No session is issued:
+    the user signs in only after confirming their e-mail."""
+    await auth_service.register(session, body)
+    return MessageOut(message="Account created — check your e-mail to verify your address")
 
 
 @router.post("/login", response_model=AuthOut)
@@ -99,11 +98,11 @@ async def verify_email(session: DbSession, body: VerifyEmailIn) -> UserOut:
 
 
 @router.post("/email/resend", response_model=MessageOut)
-async def resend_verification(user: CurrentUser) -> MessageOut:
-    if user.email_verified_at is not None:
-        raise AppError("E-mail is already verified", code="already_verified", status=409)
-    await auth_service.send_verification_email(user)
-    return MessageOut(message="Verification e-mail sent")
+async def resend_verification(session: DbSession, body: ResendVerificationIn) -> MessageOut:
+    """Unauthenticated — a blocked (unverified) user has no session to resend
+    from. Always 200 so it can't be used to probe which e-mails exist."""
+    await auth_service.resend_verification(session, body.email)
+    return MessageOut(message="If the account exists and is unverified, a verification e-mail has been sent")
 
 
 # ------------------------------------------------- social sign-in (OAuth)
