@@ -37,7 +37,7 @@ async def pair_device(session: DbSession, user: CurrentUser, body: DeviceCreateI
 @router.post("/pair/start", response_model=PairStartOut)
 async def pair_start(user: CurrentUser) -> PairStartOut:
     """Dashboard side of QR pairing: mint a short-lived code to render as QR."""
-    code, ttl = await device_service.pair_start(user.id)
+    code, ttl = await device_service.pair_start(user)
     return PairStartOut(code=code, qr_payload=f"xabarchi://pair?code={code}", expires_in=ttl)
 
 

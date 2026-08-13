@@ -17,6 +17,7 @@ from app.infrastructure.redis.rate_limit import check_rate_limit
 from app.repositories import billing_repo, contact_repo, device_repo, message_repo, user_repo
 from app.repositories.message_repo import EnqueueItem
 from app.schemas.message import GatewayReportIn, MessageOut, SendIn
+from app.services import subscription_service
 
 SEND_RATE_LIMIT = 30  # requests
 SEND_RATE_WINDOW_SECONDS = 60
@@ -60,6 +61,7 @@ def sms_segments(text: str) -> int:
 
 async def send(session: AsyncSession, user: User, data: SendIn) -> list[Message]:
     """Validate, meter, and enqueue one text to N recipients."""
+    subscription_service.assert_active(user)
     await check_rate_limit(
         f"sms:send:{user.id}", SEND_RATE_LIMIT, SEND_RATE_WINDOW_SECONDS
     )

@@ -7,14 +7,20 @@ Walks the full lifecycle: register -> me -> pair device -> send SMS
 
 import asyncio
 import json
+import os
 import secrets
 import sys
 
+import asyncpg
 import httpx
 import websockets
+from dotenv import load_dotenv
 
 BASE = "http://127.0.0.1:8000"
 API = f"{BASE}/api/v1"
+
+load_dotenv()
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 
 def step(name: str, ok: bool, detail: str = "") -> None:
@@ -22,6 +28,24 @@ def step(name: str, ok: bool, detail: str = "") -> None:
     print(f"[{mark}] {name}" + (f" — {detail}" if detail else ""))
     if not ok:
         sys.exit(1)
+
+
+async def activate_plan(user_id: str) -> None:
+    """Grant an active paid plan directly in the DB.
+
+    Xabarchi is a hard paywall — fresh (Start) accounts can't send or pair — so
+    the lifecycle checks below need an entitled account to exercise.
+    """
+    db = await asyncpg.connect(DATABASE_URL)
+    try:
+        await db.execute(
+            "UPDATE users SET plan_id='biznes', "
+            "plan_expires_at=now() + interval '10 years', sms_sent_this_month=0 "
+            "WHERE id=$1",
+            user_id,
+        )
+    finally:
+        await db.close()
 
 
 async def main() -> None:
@@ -39,6 +63,19 @@ async def main() -> None:
         # me
         r = await client.get(f"{API}/auth/me", headers=headers)
         step("me", r.status_code == 200 and r.json()["email"] == email)
+        me = r.json()
+        step("fresh account inactive (paywall)", me["planActive"] is False, str(me.get("planActive")))
+
+        # a Start account is blocked from sending until it pays
+        r = await client.post(f"{API}/messages", headers=headers, json={
+            "to": ["+998901234567"], "text": "blocked?", "priority": "urgent",
+        })
+        step("send blocked before purchase (402)", r.status_code == 402, str(r.status_code))
+
+        # grant an active plan (simulates a completed Polar purchase)
+        await activate_plan(me["id"])
+        r = await client.get(f"{API}/auth/me", headers=headers)
+        step("account active after purchase", r.json()["planActive"] is True)
 
         # pair device
         r = await client.post(f"{API}/devices/pair", headers=headers, json={
@@ -118,13 +155,21 @@ async def main() -> None:
         await listener
         step("websocket received event", len(ws_events) >= 1, ws_events[0]["event"] if ws_events else "none")
 
-        # ---- QR pairing flow (fresh user so the Start-plan cap is free) ----
+        # ---- QR pairing flow (fresh user, then activated) ----
         email2 = f"smoke_qr_{secrets.token_hex(4)}@xabarchi.uz"
         r = await client.post(f"{API}/auth/register", json={
             "firstName": "Qr", "lastName": "Smoke", "email": email2,
             "password": "smoke1234", "company": "QR Express", "phone": "998905556677",
         })
-        headers2 = {"Authorization": f"Bearer {r.json()['accessToken']}"}
+        reg2 = r.json()
+        headers2 = {"Authorization": f"Bearer {reg2['accessToken']}"}
+        user2_id = reg2["user"]["id"]
+
+        # paywall: a fresh account can't even start QR pairing
+        r = await client.post(f"{API}/devices/pair/start", headers=headers2)
+        step("qr pair/start blocked before purchase (402)", r.status_code == 402, str(r.status_code))
+
+        await activate_plan(user2_id)
 
         r = await client.post(f"{API}/devices/pair/start", headers=headers2)
         step("qr pair/start", r.status_code == 200, r.text[:120])
@@ -146,10 +191,12 @@ async def main() -> None:
         r = await client.post(f"{API}/devices/pair/complete", json=device_body)
         step("qr code one-time (reuse 401)", r.status_code == 401, str(r.status_code))
 
-        # Start plan allows 1 device: a second pairing must hit the quota
+        # an active biznes plan allows several devices — a 2nd pairing succeeds
         r = await client.post(f"{API}/devices/pair/start", headers=headers2)
-        r = await client.post(f"{API}/devices/pair/complete", json={**device_body, "code": r.json()["code"]})
-        step("plan device cap (402)", r.status_code == 402, str(r.status_code))
+        r = await client.post(f"{API}/devices/pair/complete", json={
+            **device_body, "code": r.json()["code"], "phone": "998905556688",
+        })
+        step("second device on paid plan", r.status_code == 201, str(r.status_code))
 
         # the QR-paired token works for gateway calls
         r = await client.post(f"{API}/gateway/heartbeat", headers={"X-Device-Token": qr_token}, json={

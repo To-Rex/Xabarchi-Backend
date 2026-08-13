@@ -16,6 +16,7 @@ from app.infrastructure.redis.client import get_redis
 from app.infrastructure.redis.pubsub import publish_event
 from app.repositories import billing_repo, device_repo, user_repo
 from app.schemas.device import DeviceCreateIn, DeviceOut, DeviceUpdateIn, HeartbeatIn
+from app.services import subscription_service
 
 # QR pairing codes live briefly in Redis: pair:{code} -> user_id.
 PAIR_CODE_TTL_SECONDS = 120
@@ -39,6 +40,7 @@ async def pair(session: AsyncSession, user: User, data: DeviceCreateIn) -> tuple
     Returns the device and the FULL token — the only moment it ever exists in
     plaintext; only its hash is stored.
     """
+    subscription_service.assert_active(user)
     plan = await billing_repo.get_plan(session, user.plan_id)
     device_count = await device_repo.count_for_user(session, user.id)
     if plan is not None and device_count >= plan.max_devices:
@@ -63,15 +65,17 @@ async def pair(session: AsyncSession, user: User, data: DeviceCreateIn) -> tuple
     return device, token
 
 
-async def pair_start(user_id: uuid.UUID) -> tuple[str, int]:
+async def pair_start(user: User) -> tuple[str, int]:
     """Mint a one-time pairing code for the QR the dashboard displays.
 
     The code maps to the user in Redis with a short TTL; scanning phones
-    exchange it for a permanent device token via ``pair_complete``.
+    exchange it for a permanent device token via ``pair_complete``. Gated so a
+    lapsed account can't even render a QR to pair from.
     """
+    subscription_service.assert_active(user)
     code = secrets.token_urlsafe(24)
     await get_redis().set(
-        _PAIR_KEY.format(code=code), str(user_id), ex=PAIR_CODE_TTL_SECONDS
+        _PAIR_KEY.format(code=code), str(user.id), ex=PAIR_CODE_TTL_SECONDS
     )
     return code, PAIR_CODE_TTL_SECONDS
 

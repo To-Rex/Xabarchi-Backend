@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, ForeignKey, Index, SmallInteger, String, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -32,6 +32,11 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     )
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Tashkent")
     sms_sent_this_month: Mapped[int] = mapped_column(nullable=False, default=0)
+    # When the current paid subscription lapses. NULL = no active paid plan
+    # (blocked by the paywall until purchase/renewal).
+    plan_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
@@ -42,6 +47,17 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
     def email_verified(self) -> bool:
         """Serialized into UserOut — pydantic reads properties too."""
         return self.email_verified_at is not None
+
+    @property
+    def plan_active(self) -> bool:
+        """True only with a live paid subscription — the hard-paywall gate.
+
+        A free/expired account is inactive: ``start`` never counts, and a paid
+        plan counts only while ``plan_expires_at`` is still in the future.
+        """
+        if self.plan_id not in ("biznes", "korxona"):
+            return False
+        return self.plan_expires_at is not None and self.plan_expires_at > datetime.now(UTC)
 
 
 # Case-insensitive email uniqueness without requiring the citext extension.

@@ -56,6 +56,9 @@ class UserOut(CamelModel):
     role: str
     avatar_hue: int
     plan_id: PlanId
+    # Live paywall state: true only while a paid plan is active.
+    plan_active: bool = False
+    plan_expires_at: datetime | None = None
     created_at: datetime
     timezone: str
     email_verified: bool = False

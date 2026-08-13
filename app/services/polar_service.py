@@ -24,7 +24,7 @@ import hmac
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 _PAID_PLANS = (PlanId.biznes, PlanId.korxona)
 
 _WEBHOOK_TOLERANCE_SECONDS = 300
+# Fallback entitlement length when the payload carries no explicit period end.
+_DEFAULT_PERIOD_DAYS = 31
 
 
 def _base_url() -> str:
@@ -202,6 +204,43 @@ def _event_plan(data: dict[str, object]) -> str | None:
     return _plan_for_product(product_id or str(data.get("product_id") or ""))
 
 
+def _parse_dt(raw: object) -> datetime | None:
+    if isinstance(raw, str):
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _period_end(data: dict[str, object]) -> datetime:
+    """When the entitlement should lapse.
+
+    Prefers Polar's ``current_period_end`` (on the subscription, or nested in an
+    order payload); falls back to ~1 month out so a paid account is never left
+    without an expiry.
+    """
+    candidate = _parse_dt(data.get("current_period_end") or data.get("ends_at"))
+    if candidate is None:
+        subscription = data.get("subscription")
+        if isinstance(subscription, dict):
+            candidate = _parse_dt(subscription.get("current_period_end"))
+    return candidate or datetime.now(UTC) + timedelta(days=_DEFAULT_PERIOD_DAYS)
+
+
+async def _activate(
+    session: AsyncSession, user: User, data: dict[str, object], plan_id: str | None
+) -> None:
+    """Apply a paid plan: set/refresh the expiry and reset the monthly quota."""
+    updates: dict[str, object] = {
+        "plan_expires_at": _period_end(data),
+        "sms_sent_this_month": 0,
+    }
+    if plan_id and user.plan_id != plan_id:
+        updates["plan_id"] = plan_id
+    await user_repo.update(session, user, updates)
+
+
 async def _remember_customer_id(session: AsyncSession, user: User, data: dict[str, object]) -> None:
     customer = data.get("customer") or {}
     customer_id = str(customer.get("id") or "") if isinstance(customer, dict) else ""
@@ -253,8 +292,7 @@ async def _handle_order_paid(session: AsyncSession, data: dict[str, object]) -> 
         period=f"{now:%Y-%m}",
         external_id=order_id or None,
     )
-    if plan_id and user.plan_id != plan_id:
-        await user_repo.update(session, user, {"plan_id": plan_id})
+    await _activate(session, user, data, plan_id)
     await _notify(
         session,
         user,
@@ -267,29 +305,30 @@ async def _handle_order_paid(session: AsyncSession, data: dict[str, object]) -> 
 
 
 async def _handle_subscription_active(session: AsyncSession, data: dict[str, object]) -> None:
+    """Subscription became active (first purchase or a renewal) — (re)entitle."""
     user = await _resolve_user(session, data)
     if user is None:
         return
     await _remember_customer_id(session, user, data)
-    plan_id = _event_plan(data)
-    if plan_id and user.plan_id != plan_id:
-        await user_repo.update(session, user, {"plan_id": plan_id})
+    await _activate(session, user, data, _event_plan(data))
 
 
 async def _handle_subscription_revoked(session: AsyncSession, data: dict[str, object]) -> None:
+    """Subscription ended — drop to free ``start`` and clear the entitlement."""
     user = await _resolve_user(session, data)
     if user is None:
         return
-    if user.plan_id != PlanId.start.value:
-        await user_repo.update(session, user, {"plan_id": PlanId.start.value})
+    await user_repo.update(
+        session, user, {"plan_id": PlanId.start.value, "plan_expires_at": None}
+    )
     await _notify(
         session,
         user,
         NotificationSeverity.warn,
-        "Obuna bekor qilindi",
-        "Hisobingiz Start tarifiga qaytarildi.",
+        "Obuna tugadi",
+        "SMS yuborish to'xtatildi. Davom etish uchun tarifni qayta sotib oling.",
         "Subscription ended",
-        "Your account was moved back to the Start plan.",
+        "Sending is paused. Purchase a plan again to continue.",
     )
 
 

@@ -222,11 +222,20 @@ mahsulot xaritasi `POLAR_PRODUCT_BIZNES` / `POLAR_PRODUCT_KORXONA`.
    `{FRONTEND_URL}/app/billing?checkout=success` ga qaytadi.
 2. **Webhook** (`POST /billing/webhook/polar`, Standard Webhooks imzosi bilan):
    - `order.paid` → invoice yoziladi (order id bo'yicha **idempotent** — takroriy
-     yetkazish dublikat yaratmaydi) va tarif faollashtiriladi + bildirishnoma;
-   - `subscription.active` → tarifni (qayta) faollashtiradi;
-   - `subscription.revoked` → hisob Start tarifiga qaytariladi + bildirishnoma.
+     yetkazish dublikat yaratmaydi), tarif faollashtiriladi, `plan_expires_at`
+     yangilanadi va oylik kvota (`sms_sent_this_month`) nolga tushadi + bildirishnoma;
+   - `subscription.active` → tarifni (qayta) faollashtiradi va muddatni uzaytiradi;
+   - `subscription.revoked` → hisob Start'ga qaytariladi, `plan_expires_at=NULL` (bloklanadi).
 3. **Customer portal**: `GET /billing/portal` → Polar'ning hosted portal havolasi
    (obunani bekor qilish, karta almashtirish o'sha yerda).
+
+**Hard paywall.** Xabarchi faqat faol pullik obuna bilan ishlaydi. SMS yuborish
+(`POST /messages`, `/public/messages`) va qurilma ulash (`/devices/pair*`) faol
+obuna bo'lmasa **402 `subscription_inactive`** qaytaradi. "Faol" degani: tarif
+`biznes`/`korxona` **va** `plan_expires_at` kelajakda. Muddat tugasa hisob avtomatik
+bloklanadi (har so'rovda tekshiriladi — cron shart emas); davom etish uchun qayta
+sotib olish/yangilash kerak. `/auth/me` javobida `planActive` va `planExpiresAt`
+bor — frontend blok holatini shular orqali ko'rsatishi mumkin.
 
 Webhook imzosi qo'lda tekshiriladi (HMAC-SHA256, `webhook-id.webhook-timestamp.body`,
 5 daqiqa tolerans) — `POLAR_ACCESS_TOKEN` bo'sh bo'lsa butun integratsiya 503

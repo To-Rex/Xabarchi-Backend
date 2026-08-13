@@ -112,14 +112,17 @@ async def main() -> None:
             await db.execute("DELETE FROM api_keys WHERE user_id=$1", user_id)
             await db.execute("DELETE FROM devices WHERE user_id=$1", user_id)
             await db.execute("DELETE FROM invoices WHERE user_id=$1", user_id)
+            # plan_expires_at far in the future so the demo stays active behind
+            # the paywall (sending + pairing keep working during/after seeding).
             await db.execute(
                 """UPDATE users SET plan_id='biznes', email_verified_at=now(), sms_sent_this_month=0,
+                   plan_expires_at=now() + interval '10 years',
                    first_name='Demo', last_name='Foydalanuvchi', company='Xabarchi Demo',
                    phone='998712000000', avatar_hue=172, password_hash=users.password_hash
                    WHERE id=$1""",
                 user_id,
             )
-            step("reset", "old demo data wiped, plan=biznes, email verified")
+            step("reset", "old demo data wiped, plan=biznes (active), email verified")
 
             # ---- devices (real pairing API) ---------------------------
             device_specs = [

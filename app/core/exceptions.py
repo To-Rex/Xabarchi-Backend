@@ -49,6 +49,13 @@ class QuotaError(AppError):
     status = 402
 
 
+class SubscriptionError(AppError):
+    """No active paid subscription — the account is gated behind payment."""
+
+    code = "subscription_inactive"
+    status = 402
+
+
 class RateLimitError(AppError):
     """Too many requests for this principal."""
 
