@@ -72,8 +72,11 @@ async def login(session: AsyncSession, data: LoginIn) -> tuple[User, TokenPair]:
     ):
         # One message for both cases — never reveal whether the email exists.
         raise AuthError("Invalid email or password")
-    # The e-mail must be confirmed before the account can be used.
+    # The e-mail must be confirmed before the account can be used. Re-send the
+    # verification link on the blocked attempt so the user always gets a fresh
+    # one (best-effort — never blocks the 403).
     if user.email_verified_at is None:
+        await send_verification_email(user)
         raise AppError(
             "Please verify your e-mail before signing in",
             code="email_not_verified",
