@@ -47,6 +47,17 @@ async def get_message(session: DbSession, user: CurrentUser, message_id: int) ->
 
 
 @router.post(
+    "/messages/{message_id}/resend",
+    response_model=MessageOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def resend_message(session: DbSession, user: CurrentUser, message_id: int) -> MessageOut:
+    """Queue a fresh copy of an existing message (same recipient/text/priority)."""
+    message = await sms_service.resend(session, user, message_id)
+    return MessageOut.model_validate(message)
+
+
+@router.post(
     "/public/messages",
     response_model=list[MessageOut],
     status_code=status.HTTP_201_CREATED,

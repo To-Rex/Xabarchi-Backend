@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, QuotaError, not_found
-from app.domain.enums import PRIORITY_RANK, MessageStatus
+from app.domain.enums import PRIORITY_RANK, MessageStatus, SmsPriority
 from app.infrastructure.db.models import Device, Message, User
 from app.infrastructure.redis.pubsub import publish_event
 from app.infrastructure.redis.rate_limit import check_rate_limit
@@ -122,6 +122,28 @@ async def get_message(session: AsyncSession, user_id: uuid.UUID, message_id: int
     if message is None:
         raise not_found("Message", message_id)
     return message
+
+
+# Reverse of PRIORITY_RANK: stored smallint rank -> string enum.
+_RANK_TO_PRIORITY: dict[int, SmsPriority] = {rank: prio for prio, rank in PRIORITY_RANK.items()}
+
+
+async def resend(session: AsyncSession, user: User, message_id: int) -> Message:
+    """Queue a fresh copy of an existing message to the same recipient.
+
+    Re-runs the normal ``send`` path (rate limit, quota, metering, event) so a
+    resend behaves exactly like a new send — it never mutates the original
+    row (the ledger stays append-only). Returns the new message.
+    """
+    original = await get_message(session, user.id, message_id)
+    data = SendIn(
+        to=[original.to_phone],
+        text=original.text_,
+        device_id=original.device_id,
+        priority=_RANK_TO_PRIORITY.get(original.priority, SmsPriority.transactional),
+    )
+    messages = await send(session, user, data)
+    return messages[0]
 
 
 # ---------------------------------------------------------------- gateway
