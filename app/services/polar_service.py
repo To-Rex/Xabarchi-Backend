@@ -1,0 +1,309 @@
+"""Polar (polar.sh) billing: checkout sessions, customer portal, webhooks.
+
+Flow:
+
+1. Dashboard calls ``POST /billing/checkout {planId}`` -> we create a Polar
+   checkout session (the plan's product id) and return its hosted ``url``.
+   ``external_customer_id`` and ``metadata.user_id`` both carry our user id,
+   so every later webhook can be traced back to the account.
+2. Polar calls ``POST /billing/webhook/polar`` (Standard Webhooks signature).
+   ``order.paid`` records an invoice (idempotent on the order id) and
+   activates the plan; ``subscription.active`` re-activates it on renewals;
+   ``subscription.revoked`` drops the account back to the free plan.
+3. ``GET /billing/portal`` mints a customer-portal session so users manage
+   their subscription/payment methods on Polar's hosted portal.
+
+Empty ``POLAR_ACCESS_TOKEN`` disables the integration with a clear 503.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import logging
+import time
+import uuid
+from datetime import UTC, datetime
+
+import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.exceptions import AppError, AuthError
+from app.domain.enums import NotificationKind, NotificationSeverity, PlanId
+from app.infrastructure.db.models import User
+from app.repositories import billing_repo, user_repo
+from app.services import notification_service
+
+logger = logging.getLogger(__name__)
+
+# Only paid plans are purchasable; "start" is the free fallback.
+_PAID_PLANS = (PlanId.biznes, PlanId.korxona)
+
+_WEBHOOK_TOLERANCE_SECONDS = 300
+
+
+def _base_url() -> str:
+    return (
+        "https://sandbox-api.polar.sh"
+        if settings.polar_server == "sandbox"
+        else "https://api.polar.sh"
+    )
+
+
+def _ensure_enabled() -> None:
+    if not settings.polar_access_token:
+        raise AppError(
+            "Polar billing is not configured on this server",
+            code="billing_not_configured",
+            status=503,
+        )
+
+
+def _product_for_plan(plan_id: str) -> str:
+    product = {
+        PlanId.biznes.value: settings.polar_product_biznes,
+        PlanId.korxona.value: settings.polar_product_korxona,
+    }.get(plan_id, "")
+    if not product:
+        raise AppError(
+            f"Plan '{plan_id}' cannot be purchased online",
+            code="plan_not_purchasable",
+            status=400,
+        )
+    return product
+
+
+def _plan_for_product(product_id: str) -> str | None:
+    if product_id and product_id == settings.polar_product_biznes:
+        return PlanId.biznes.value
+    if product_id and product_id == settings.polar_product_korxona:
+        return PlanId.korxona.value
+    return None
+
+
+async def _polar_post(path: str, payload: dict[str, object]) -> dict[str, object]:
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.post(
+            f"{_base_url()}{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {settings.polar_access_token}"},
+        )
+    if response.status_code not in (200, 201):
+        logger.error("Polar %s failed: %s %s", path, response.status_code, response.text[:300])
+        raise AppError("Polar request failed", code="polar_error", status=502)
+    return response.json()
+
+
+async def create_checkout(user: User, plan_id: str) -> str:
+    """Create a hosted checkout session; returns the URL to redirect to."""
+    _ensure_enabled()
+    data = await _polar_post(
+        "/v1/checkouts/",
+        {
+            "products": [_product_for_plan(plan_id)],
+            "success_url": f"{settings.frontend_url}/app/billing?checkout=success",
+            "customer_email": user.email,
+            "external_customer_id": str(user.id),
+            "metadata": {"user_id": str(user.id), "plan_id": plan_id},
+        },
+    )
+    return str(data["url"])
+
+
+async def create_portal_url(user: User) -> str:
+    """Customer-portal session URL for managing the subscription on Polar."""
+    _ensure_enabled()
+    data = await _polar_post(
+        "/v1/customer-sessions/",
+        {
+            "external_customer_id": str(user.id),
+            "return_url": f"{settings.frontend_url}/app/billing",
+        },
+    )
+    return str(data["customer_portal_url"])
+
+
+# --------------------------------------------------------------- webhooks
+
+
+def verify_webhook(body: bytes, headers: dict[str, str]) -> None:
+    """Standard Webhooks signature check (HMAC-SHA256 over id.timestamp.body).
+
+    Raises AuthError unless one ``v1,<sig>`` entry matches and the timestamp
+    is within tolerance. Polar secrets may carry a ``polar_whs_``/``whsec_``
+    prefix and are base64-encoded.
+    """
+    if not settings.polar_webhook_secret:
+        raise AuthError("Webhook secret not configured")
+    webhook_id = headers.get("webhook-id", "")
+    timestamp = headers.get("webhook-timestamp", "")
+    signature_header = headers.get("webhook-signature", "")
+    if not webhook_id or not timestamp or not signature_header:
+        raise AuthError("Missing webhook signature headers")
+
+    try:
+        if abs(time.time() - int(timestamp)) > _WEBHOOK_TOLERANCE_SECONDS:
+            raise AuthError("Webhook timestamp outside tolerance")
+    except ValueError as exc:
+        raise AuthError("Invalid webhook timestamp") from exc
+
+    secret = settings.polar_webhook_secret
+    for prefix in ("polar_whs_", "whsec_"):
+        if secret.startswith(prefix):
+            secret = secret[len(prefix) :]
+            break
+    try:
+        key = base64.b64decode(secret + "=" * (-len(secret) % 4))
+    except Exception:  # noqa: BLE001 - some setups store the raw secret
+        key = secret.encode()
+
+    signed = f"{webhook_id}.{timestamp}.".encode() + body
+    expected = base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode()
+
+    for candidate in signature_header.split(" "):
+        version, _, signature = candidate.partition(",")
+        if version == "v1" and hmac.compare_digest(signature, expected):
+            return
+    raise AuthError("Webhook signature mismatch")
+
+
+async def _resolve_user(session: AsyncSession, data: dict[str, object]) -> User | None:
+    """Find our user from a webhook payload (metadata, external id, e-mail)."""
+    metadata = data.get("metadata") or {}
+    customer = data.get("customer") or {}
+    for raw in (
+        metadata.get("user_id") if isinstance(metadata, dict) else None,
+        customer.get("external_id") if isinstance(customer, dict) else None,
+    ):
+        if raw:
+            try:
+                user = await user_repo.get_by_id(session, uuid.UUID(str(raw)))
+            except ValueError:
+                user = None
+            if user is not None:
+                return user
+    email = customer.get("email") if isinstance(customer, dict) else None
+    if email:
+        return await user_repo.get_by_email(session, str(email))
+    return None
+
+
+def _event_plan(data: dict[str, object]) -> str | None:
+    """Plan bought: prefer checkout metadata, fall back to the product map."""
+    metadata = data.get("metadata") or {}
+    if isinstance(metadata, dict):
+        plan_id = str(metadata.get("plan_id") or "")
+        if plan_id in {p.value for p in _PAID_PLANS}:
+            return plan_id
+    product = data.get("product") or {}
+    product_id = str(product.get("id") or "") if isinstance(product, dict) else ""
+    return _plan_for_product(product_id or str(data.get("product_id") or ""))
+
+
+async def _remember_customer_id(session: AsyncSession, user: User, data: dict[str, object]) -> None:
+    customer = data.get("customer") or {}
+    customer_id = str(customer.get("id") or "") if isinstance(customer, dict) else ""
+    if customer_id and user.polar_customer_id != customer_id:
+        await user_repo.update(session, user, {"polar_customer_id": customer_id})
+
+
+async def _notify(
+    session: AsyncSession,
+    user: User,
+    severity: NotificationSeverity,
+    title_uz: str,
+    body_uz: str,
+    title_en: str,
+    body_en: str,
+) -> None:
+    await notification_service.create(
+        session,
+        user.id,
+        kind=NotificationKind.billing,
+        severity=severity,
+        title={"uz": title_uz, "ru": title_en, "en": title_en},
+        body={"uz": body_uz, "ru": body_en, "en": body_en},
+    )
+
+
+async def _handle_order_paid(session: AsyncSession, data: dict[str, object]) -> None:
+    order_id = str(data.get("id") or "")
+    if order_id and await billing_repo.get_invoice_by_external_id(session, order_id) is not None:
+        return  # replayed delivery — already recorded
+    user = await _resolve_user(session, data)
+    if user is None:
+        logger.warning("Polar order.paid: no matching user (order=%s)", order_id)
+        return
+    await _remember_customer_id(session, user, data)
+
+    plan_id = _event_plan(data)
+    amount = int(data.get("total_amount") or data.get("amount") or 0)
+    now = datetime.now(UTC)
+    sequence = await billing_repo.count_invoices(session) + 1
+    await billing_repo.create_invoice(
+        session,
+        user_id=user.id,
+        number=f"INV-{now.year}-{sequence:04d}",
+        date=now,
+        amount=amount,
+        status="paid",
+        plan_id=plan_id or user.plan_id,
+        period=f"{now:%Y-%m}",
+        external_id=order_id or None,
+    )
+    if plan_id and user.plan_id != plan_id:
+        await user_repo.update(session, user, {"plan_id": plan_id})
+    await _notify(
+        session,
+        user,
+        NotificationSeverity.success,
+        "To'lov qabul qilindi",
+        f"{plan_id or user.plan_id} tarifi faollashtirildi.",
+        "Payment received",
+        f"The {plan_id or user.plan_id} plan is now active.",
+    )
+
+
+async def _handle_subscription_active(session: AsyncSession, data: dict[str, object]) -> None:
+    user = await _resolve_user(session, data)
+    if user is None:
+        return
+    await _remember_customer_id(session, user, data)
+    plan_id = _event_plan(data)
+    if plan_id and user.plan_id != plan_id:
+        await user_repo.update(session, user, {"plan_id": plan_id})
+
+
+async def _handle_subscription_revoked(session: AsyncSession, data: dict[str, object]) -> None:
+    user = await _resolve_user(session, data)
+    if user is None:
+        return
+    if user.plan_id != PlanId.start.value:
+        await user_repo.update(session, user, {"plan_id": PlanId.start.value})
+    await _notify(
+        session,
+        user,
+        NotificationSeverity.warn,
+        "Obuna bekor qilindi",
+        "Hisobingiz Start tarifiga qaytarildi.",
+        "Subscription ended",
+        "Your account was moved back to the Start plan.",
+    )
+
+
+async def handle_event(session: AsyncSession, event: dict[str, object]) -> None:
+    """Dispatch one verified webhook event; unknown types are ignored."""
+    event_type = str(event.get("type") or "")
+    data = event.get("data")
+    if not isinstance(data, dict):
+        return
+    if event_type == "order.paid":
+        await _handle_order_paid(session, data)
+    elif event_type == "subscription.active":
+        await _handle_subscription_active(session, data)
+    elif event_type == "subscription.revoked":
+        await _handle_subscription_revoked(session, data)
+    else:
+        logger.info("Polar webhook '%s' acknowledged without action", event_type)

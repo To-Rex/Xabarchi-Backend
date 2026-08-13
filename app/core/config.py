@@ -38,6 +38,34 @@ class Settings(BaseSettings):
     gateway_lease_seconds: int = 120
     gateway_claim_max: int = 100
 
+    # Public URLs used when building links (OAuth callbacks, e-mail links,
+    # Polar checkout redirects).
+    frontend_url: str = "http://localhost:5173"
+    public_api_url: str = "http://localhost:8000"
+
+    # Social auth. A provider is enabled only when its client id is set.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    apple_client_id: str = ""
+    # Apple's "client secret" is a developer-generated signed JWT.
+    apple_client_secret: str = ""
+
+    # SMTP for password-reset / e-mail-verification mail. When smtp_host is
+    # empty the mail is logged instead of sent (development mode).
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = "Xabarchi <no-reply@xabarchi.uz>"
+
+    # Polar (polar.sh) billing. Empty token disables the integration.
+    polar_access_token: str = ""
+    polar_webhook_secret: str = ""
+    polar_server: str = "sandbox"  # "sandbox" | "production"
+    # Polar product IDs mapped to paid plan ids.
+    polar_product_biznes: str = ""
+    polar_product_korxona: str = ""
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:

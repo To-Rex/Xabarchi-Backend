@@ -12,7 +12,7 @@ from app.infrastructure.db.models.message import Message
 from app.infrastructure.db.models.notification import Notification
 from app.infrastructure.db.models.telegram import BotBroadcast, BotSubscriber, TelegramBot
 from app.infrastructure.db.models.template import Template
-from app.infrastructure.db.models.user import User
+from app.infrastructure.db.models.user import OAuthAccount, User
 
 __all__ = [
     "ApiKey",
@@ -25,6 +25,7 @@ __all__ = [
     "Invoice",
     "Message",
     "Notification",
+    "OAuthAccount",
     "Plan",
     "TelegramBot",
     "Template",

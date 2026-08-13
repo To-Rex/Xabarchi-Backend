@@ -52,10 +52,58 @@ def test_openapi_lists_core_routes() -> None:
         "/healthz",
         "/readyz",
         "/api/v1/auth/login",
+        "/api/v1/auth/password/forgot",
+        "/api/v1/auth/password/reset",
+        "/api/v1/auth/email/verify",
+        "/api/v1/auth/oauth/{provider}/start",
+        "/api/v1/auth/oauth/{provider}/callback",
         "/api/v1/devices/pair/start",
         "/api/v1/devices/pair/complete",
         "/api/v1/messages",
         "/api/v1/gateway/claim",
         "/api/v1/ws",
+        "/api/v1/billing/checkout",
+        "/api/v1/billing/portal",
+        "/api/v1/billing/webhook/polar",
     ):
         assert expected in paths, f"missing route: {expected}"
+
+
+def test_polar_webhook_signature() -> None:
+    """Round-trip the Standard Webhooks HMAC scheme used by Polar."""
+    import base64
+    import hashlib
+    import hmac
+    import time
+
+    from app.core.config import settings
+    from app.core.exceptions import AuthError
+    from app.services.polar_service import verify_webhook
+
+    secret_bytes = b"test-webhook-secret-32-bytes-long!"
+    settings.polar_webhook_secret = "whsec_" + base64.b64encode(secret_bytes).decode()
+
+    body = b'{"type":"order.paid","data":{"id":"ord_1"}}'
+    webhook_id = "msg_123"
+    timestamp = str(int(time.time()))
+    signed = f"{webhook_id}.{timestamp}.".encode() + body
+    signature = base64.b64encode(hmac.new(secret_bytes, signed, hashlib.sha256).digest()).decode()
+    headers = {
+        "webhook-id": webhook_id,
+        "webhook-timestamp": timestamp,
+        "webhook-signature": f"v1,{signature}",
+    }
+
+    verify_webhook(body, headers)  # must not raise
+
+    for bad_headers, bad_body in (
+        ({**headers, "webhook-signature": "v1,dGFtcGVyZWQ="}, body),  # wrong signature
+        (headers, body + b" "),  # tampered body
+        ({**headers, "webhook-timestamp": str(int(time.time()) - 3600)}, body),  # stale
+    ):
+        try:
+            verify_webhook(bad_body, bad_headers)
+        except AuthError:
+            pass
+        else:
+            raise AssertionError("verify_webhook accepted an invalid signature")

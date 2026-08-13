@@ -1,13 +1,30 @@
-"""Auth routes: register, login, refresh, and the /me profile."""
+"""Auth routes: register, login, refresh, /me profile, password reset,
+e-mail verification, and social sign-in (Google / Apple)."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from urllib.parse import quote
+
+from fastapi import APIRouter, Request, status
+from fastapi.responses import RedirectResponse
 
 from app.api.deps import CurrentUser, DbSession
-from app.schemas.auth import LoginIn, RefreshIn, RegisterIn, TokenPair, UserOut, UserUpdateIn
+from app.core.config import settings
+from app.core.exceptions import AppError
+from app.schemas.auth import (
+    ForgotPasswordIn,
+    LoginIn,
+    MessageOut,
+    RefreshIn,
+    RegisterIn,
+    ResetPasswordIn,
+    TokenPair,
+    UserOut,
+    UserUpdateIn,
+    VerifyEmailIn,
+)
 from app.schemas.common import CamelModel
-from app.services import auth_service
+from app.services import auth_service, oauth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -54,3 +71,85 @@ async def me(user: CurrentUser) -> UserOut:
 async def update_me(session: DbSession, user: CurrentUser, body: UserUpdateIn) -> UserOut:
     updated = await auth_service.update_profile(session, user, body)
     return UserOut.model_validate(updated)
+
+
+# ------------------------------------------------------- password reset
+
+
+@router.post("/password/forgot", response_model=MessageOut)
+async def forgot_password(session: DbSession, body: ForgotPasswordIn) -> MessageOut:
+    """Always 200 — the response never reveals whether the e-mail exists."""
+    await auth_service.request_password_reset(session, body.email)
+    return MessageOut(message="If the e-mail exists, a reset link has been sent")
+
+
+@router.post("/password/reset", response_model=MessageOut)
+async def reset_password(session: DbSession, body: ResetPasswordIn) -> MessageOut:
+    await auth_service.reset_password(session, body.token, body.password)
+    return MessageOut(message="Password has been reset")
+
+
+# ---------------------------------------------------- e-mail verification
+
+
+@router.post("/email/verify", response_model=UserOut)
+async def verify_email(session: DbSession, body: VerifyEmailIn) -> UserOut:
+    user = await auth_service.verify_email(session, body.token)
+    return UserOut.model_validate(user)
+
+
+@router.post("/email/resend", response_model=MessageOut)
+async def resend_verification(user: CurrentUser) -> MessageOut:
+    if user.email_verified_at is not None:
+        raise AppError("E-mail is already verified", code="already_verified", status=409)
+    await auth_service.send_verification_email(user)
+    return MessageOut(message="Verification e-mail sent")
+
+
+# ------------------------------------------------- social sign-in (OAuth)
+
+
+@router.get("/oauth/{provider}/start", include_in_schema=True)
+async def oauth_start(provider: str) -> RedirectResponse:
+    """302 to the provider's consent screen (Google / Apple)."""
+    url = await oauth_service.start(provider)
+    return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
+
+
+async def _oauth_finish(session: DbSession, provider: str, code: str, state: str) -> RedirectResponse:
+    """Shared callback: exchange the code, then hand tokens to the frontend.
+
+    Tokens travel in the URL *fragment* so they never reach server logs;
+    errors land on the same page as ``#error=<code>``.
+    """
+    try:
+        user = await oauth_service.complete(session, provider, code, state)
+    except AppError as exc:
+        return RedirectResponse(
+            f"{settings.frontend_url}/auth/callback#error={quote(exc.code)}",
+            status_code=status.HTTP_302_FOUND,
+        )
+    tokens = auth_service.issue_tokens(user.id)
+    fragment = f"accessToken={quote(tokens.access_token)}&refreshToken={quote(tokens.refresh_token)}"
+    return RedirectResponse(
+        f"{settings.frontend_url}/auth/callback#{fragment}",
+        status_code=status.HTTP_302_FOUND,
+    )
+
+
+@router.get("/oauth/{provider}/callback", include_in_schema=False)
+async def oauth_callback_get(
+    session: DbSession, provider: str, code: str = "", state: str = ""
+) -> RedirectResponse:
+    return await _oauth_finish(session, provider, code, state)
+
+
+@router.post("/oauth/{provider}/callback", include_in_schema=False)
+async def oauth_callback_post(
+    session: DbSession, provider: str, request: Request
+) -> RedirectResponse:
+    """Apple posts the code back as an HTML form (``response_mode=form_post``)."""
+    form = await request.form()
+    return await _oauth_finish(
+        session, provider, str(form.get("code") or ""), str(form.get("state") or "")
+    )

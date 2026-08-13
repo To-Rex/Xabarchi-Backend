@@ -26,3 +26,21 @@ class InvoiceOut(CamelModel):
     status: InvoiceStatus
     plan_id: PlanId
     period: str
+
+
+class CheckoutIn(CamelModel):
+    """Start a Polar checkout for one of the paid plans."""
+
+    plan_id: PlanId
+
+
+class CheckoutOut(CamelModel):
+    """Hosted checkout URL — the frontend redirects the browser to it."""
+
+    url: str
+
+
+class PortalOut(CamelModel):
+    """Polar customer-portal URL for managing the subscription."""
+
+    url: str

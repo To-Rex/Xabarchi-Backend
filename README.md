@@ -91,6 +91,12 @@ Hammasi `/api/v1` prefiksi ostida (probe'lardan tashqari).
 | POST | `/auth/login` | — | Kirish (token pair + user) |
 | POST | `/auth/refresh` | — | Refresh token bilan yangi pair |
 | GET/PATCH | `/auth/me` | JWT | Profil / profilni yangilash |
+| POST | `/auth/password/forgot` | — | Parol tiklash havolasini yuborish (email mavjudligini oshkor qilmaydi) |
+| POST | `/auth/password/reset` | — | Bir martalik token bilan yangi parol o'rnatish |
+| POST | `/auth/email/verify` | — | E-mail tasdiqlash (bir martalik token) |
+| POST | `/auth/email/resend` | JWT | Tasdiqlash xatini qayta yuborish |
+| GET | `/auth/oauth/{provider}/start` | — | Google/Apple konsent sahifasiga 302 |
+| GET/POST | `/auth/oauth/{provider}/callback` | — | OAuth callback → frontendga token fragment bilan 302 |
 | GET | `/devices` | JWT | Qurilmalar ro'yxati |
 | POST | `/devices/pair` | JWT | Yangi telefon ulash — **token bir marta** ko'rsatiladi |
 | POST | `/devices/pair/start` | JWT | QR pairing: dashboard uchun 120s lik bir martalik kod + `xabarchi://pair?code=...` deep-link |
@@ -118,6 +124,9 @@ Hammasi `/api/v1` prefiksi ostida (probe'lardan tashqari).
 | GET | `/analytics/overview`, `/analytics/daily` | JWT | Dashboard statistikasi |
 | GET/POST/DELETE | `/api-keys` | JWT | API kalitlar (kalit **bir marta** ko'rsatiladi) |
 | GET | `/billing/plans`, `/billing/invoices` | JWT* | Tariflar (ochiq) va hisob-fakturalar |
+| POST | `/billing/checkout` | JWT | Polar checkout sessiyasi — `{url}` qaytaradi |
+| GET | `/billing/portal` | JWT | Polar customer-portal havolasi (obunani boshqarish) |
+| POST | `/billing/webhook/polar` | Webhook imzo | Polar eventlari (order.paid, subscription.*) |
 | WS | `/ws?token=<access JWT>` | JWT | Realtime eventlar + 30s ping |
 | GET | `/healthz`, `/readyz` | — | Liveness / readiness (root'da) |
 
@@ -144,6 +153,53 @@ curl -X POST http://localhost:8000/api/v1/devices/pair/complete \
    muddati o'tsa ham 401. Tarif limiti (`max_devices`) bu yerda ham tekshiriladi (402).
 4. Dashboard pairing tugaganini WebSocket'dagi `device.paired` eventi orqali biladi —
    polling shart emas.
+
+## Social auth, parol tiklash, e-mail tasdiqlash
+
+**Social sign-in (Google / Apple).** Backend butun OAuth redirect oqimini o'zi boshqaradi:
+`GET /auth/oauth/{provider}/start` → provayder konsenti → callback → foydalanuvchi
+topiladi/yaratiladi → brauzer `{FRONTEND_URL}/auth/callback#accessToken=...&refreshToken=...`
+ga 302 qilinadi (tokenlar URL fragmentida — server loglariga tushmaydi; xatolar
+`#error=<code>` bilan qaytadi). Provayder faqat client id sozlanganda yoqiladi
+(`GOOGLE_CLIENT_ID`, `APPLE_CLIENT_ID`); provayder tasdiqlagan e-mail avtomatik
+tasdiqlangan sanaladi. Social-only akkauntlarda parol yo'q (`password_hash IS NULL`).
+
+**Parol tiklash.** `POST /auth/password/forgot {email}` har doim 200 qaytaradi
+(e-mail mavjudligini oshkor qilmaydi); mavjud bo'lsa Redis'da 30 daqiqalik bir
+martalik token yaratilib, `{FRONTEND_URL}/reset-password?token=...` havolasi
+yuboriladi. `POST /auth/password/reset {token, password}` — token `GETDEL` bilan
+qat'iy bir martalik.
+
+**E-mail tasdiqlash.** Ro'yxatdan o'tishda 24 soatlik token bilan tasdiqlash
+havolasi yuboriladi (`{FRONTEND_URL}/verify-email?token=...`);
+`POST /auth/email/verify {token}` tasdiqlaydi, `POST /auth/email/resend` (JWT)
+qayta yuboradi. `UserOut`da `emailVerified` maydoni bor.
+
+**SMTP.** `SMTP_HOST` bo'sh bo'lsa xatlar yuborilmaydi, havola server logiga
+yoziladi (dev-rejim) — oqimlar mail-serversiz ham sinovdan o'tadi.
+
+## To'lovlar — Polar (polar.sh)
+
+Pullik tariflar Polar orqali sotiladi. Sozlash: `POLAR_ACCESS_TOKEN` (OAT),
+`POLAR_WEBHOOK_SECRET`, `POLAR_SERVER` (`sandbox`/`production`) va tarif → Polar
+mahsulot xaritasi `POLAR_PRODUCT_BIZNES` / `POLAR_PRODUCT_KORXONA`.
+
+1. **Checkout**: dashboard `POST /billing/checkout {"planId": "biznes"}` chaqiradi →
+   backend Polar'da checkout sessiya yaratadi (`external_customer_id` va
+   `metadata.user_id` — bizning user id) va hosted `{url}` qaytaradi; frontend
+   brauzerni shu URLga yo'naltiradi. Muvaffaqiyatda mijoz
+   `{FRONTEND_URL}/app/billing?checkout=success` ga qaytadi.
+2. **Webhook** (`POST /billing/webhook/polar`, Standard Webhooks imzosi bilan):
+   - `order.paid` → invoice yoziladi (order id bo'yicha **idempotent** — takroriy
+     yetkazish dublikat yaratmaydi) va tarif faollashtiriladi + bildirishnoma;
+   - `subscription.active` → tarifni (qayta) faollashtiradi;
+   - `subscription.revoked` → hisob Start tarifiga qaytariladi + bildirishnoma.
+3. **Customer portal**: `GET /billing/portal` → Polar'ning hosted portal havolasi
+   (obunani bekor qilish, karta almashtirish o'sha yerda).
+
+Webhook imzosi qo'lda tekshiriladi (HMAC-SHA256, `webhook-id.webhook-timestamp.body`,
+5 daqiqa tolerans) — `POLAR_ACCESS_TOKEN` bo'sh bo'lsa butun integratsiya 503
+`billing_not_configured` bilan o'chik turadi.
 
 ## Gateway protocol (claim → ack → report)
 

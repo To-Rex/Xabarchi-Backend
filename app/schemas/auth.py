@@ -58,6 +58,31 @@ class UserOut(CamelModel):
     plan_id: PlanId
     created_at: datetime
     timezone: str
+    email_verified: bool = False
+
+
+class ForgotPasswordIn(CamelModel):
+    email: str = Field(max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def _lower_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class ResetPasswordIn(CamelModel):
+    token: str = Field(min_length=16, max_length=64)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class VerifyEmailIn(CamelModel):
+    token: str = Field(min_length=16, max_length=64)
+
+
+class MessageOut(CamelModel):
+    """Generic acknowledgement body."""
+
+    message: str
 
 
 class UserUpdateIn(CamelModel):

@@ -50,3 +50,5 @@ class Invoice(Base, TimestampMixin):
     )
     # Billed period label like "2026-08" or "Avgust 2026".
     period: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Polar order id — makes webhook processing idempotent (unique index).
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
