@@ -16,6 +16,7 @@ doubles as a "reset demo" job (safe to put on a cron).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import random
 import sys
@@ -221,9 +222,20 @@ async def main() -> None:
             step("api keys", "2 created")
 
             # ---- telegram bot + subscribers + broadcasts --------------
-            bot_token = "123456789:DEMO_seed_token_aaaaaaaaaaaaaaaaaaaaaa"
-            await api_call(client, "POST", "/telegram/connect", token=token, json={"token": bot_token})
-            bot_id = uuid.UUID((await api_call(client, "GET", "/telegram/bot", token=token))["id"])
+            # The demo bot is a mock — it has no real BotFather token, so we
+            # insert it directly instead of POST /telegram/connect (which now
+            # validates the token against Telegram's getMe). token_enc stays
+            # NULL, so broadcasts take the mocked-delivery path and the demo
+            # stays lively without a live bot.
+            bot_id = uuid.uuid4()
+            await db.execute(
+                """INSERT INTO telegram_bots
+                       (id, user_id, username, title, status, token_hash, webhook_ok,
+                        connected_at, created_at, updated_at)
+                   VALUES ($1, $2, 'xabarchidemo_bot', 'Xabarchi Demo', 'active', $3, true,
+                        now(), now(), now())""",
+                bot_id, user_id, hashlib.sha256(b"demo-seed-bot").hexdigest(),
+            )
             subscribers = [
                 ("Jasur Karimov", "jasur_k", 152, "link"), ("Dilnoza R.", None, 12, "qr"),
                 ("Bekzod T.", "bekzod_t", 210, "search"), ("Malika Yusupova", "malika_y", 48, "link"),

@@ -20,6 +20,14 @@ async def get_bot(session: AsyncSession, user_id: uuid.UUID) -> TelegramBot | No
     return await session.scalar(stmt)
 
 
+async def get_bot_by_webhook_secret(session: AsyncSession, secret: str) -> TelegramBot | None:
+    stmt = select(TelegramBot).where(
+        TelegramBot.webhook_secret == secret,
+        TelegramBot.deleted_at.is_(None),
+    )
+    return await session.scalar(stmt)
+
+
 async def create_bot(session: AsyncSession, **fields: Any) -> TelegramBot:
     bot = TelegramBot(**fields)
     session.add(bot)
@@ -39,6 +47,36 @@ async def subscriber_count(session: AsyncSession, bot_id: uuid.UUID) -> int:
         .where(BotSubscriber.bot_id == bot_id, BotSubscriber.deleted_at.is_(None))
     )
     return int(await session.scalar(stmt) or 0)
+
+
+async def get_subscriber_by_chat(
+    session: AsyncSession, bot_id: uuid.UUID, chat_id: int
+) -> BotSubscriber | None:
+    stmt = select(BotSubscriber).where(
+        BotSubscriber.bot_id == bot_id,
+        BotSubscriber.chat_id == chat_id,
+        BotSubscriber.deleted_at.is_(None),
+    )
+    return await session.scalar(stmt)
+
+
+async def create_subscriber(session: AsyncSession, **fields: Any) -> BotSubscriber:
+    subscriber = BotSubscriber(**fields)
+    session.add(subscriber)
+    await session.flush()
+    return subscriber
+
+
+async def list_deliverable_subscribers(
+    session: AsyncSession, bot_id: uuid.UUID
+) -> list[BotSubscriber]:
+    """Every live subscriber we actually have a Telegram chat_id for."""
+    stmt = select(BotSubscriber).where(
+        BotSubscriber.bot_id == bot_id,
+        BotSubscriber.chat_id.is_not(None),
+        BotSubscriber.deleted_at.is_(None),
+    )
+    return list((await session.scalars(stmt)).all())
 
 
 async def list_subscribers(
@@ -80,5 +118,14 @@ async def list_broadcasts(
 async def create_broadcast(session: AsyncSession, **fields: Any) -> BotBroadcast:
     broadcast = BotBroadcast(**fields)
     session.add(broadcast)
+    await session.flush()
+    return broadcast
+
+
+async def update_broadcast(
+    session: AsyncSession, broadcast: BotBroadcast, **fields: Any
+) -> BotBroadcast:
+    for key, value in fields.items():
+        setattr(broadcast, key, value)
     await session.flush()
     return broadcast

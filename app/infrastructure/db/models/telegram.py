@@ -34,8 +34,16 @@ class TelegramBot(Base, TimestampMixin, SoftDeleteMixin):
     username: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(8), nullable=False, default="active")
-    # SHA-256 of the BotFather token; the plaintext token is never stored.
+    # SHA-256 of the BotFather token — used to detect duplicate connects.
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Fernet-encrypted BotFather token; required to actually call the Bot API.
+    # Null on legacy/demo bots connected before real sending existed.
+    token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Telegram's numeric bot id (from getMe).
+    bot_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Random secret both embedded in the webhook URL and sent back by Telegram
+    # in the X-Telegram-Bot-Api-Secret-Token header — authenticates updates.
+    webhook_secret: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)
     webhook_ok: Mapped[bool] = mapped_column(nullable=False, default=True)
     connected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -54,6 +62,8 @@ class BotSubscriber(Base, TimestampMixin, SoftDeleteMixin):
         nullable=False,
         index=True,
     )
+    # Telegram chat id to deliver to; null on legacy/demo seed rows.
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     avatar_hue: Mapped[int] = mapped_column(SmallInteger, nullable=False)

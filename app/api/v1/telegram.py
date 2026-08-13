@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Header, Query, Request, status
 
 from app.api.deps import CurrentUser, DbSession
 from app.schemas.common import Page
@@ -12,6 +12,30 @@ from app.schemas.telegram import BotConnectIn, BotOut, BroadcastIn, BroadcastOut
 from app.services import telegram_service
 
 router = APIRouter(prefix="/telegram", tags=["telegram"])
+
+
+@router.post("/webhook/{secret}", include_in_schema=False)
+async def telegram_webhook(
+    secret: str,
+    request: Request,
+    session: DbSession,
+    x_telegram_bot_api_secret_token: Annotated[str | None, Header()] = None,
+) -> dict[str, bool]:
+    """Public endpoint Telegram POSTs bot updates to.
+
+    Authenticated by the unguessable ``secret`` (unique per bot, also echoed in
+    the ``X-Telegram-Bot-Api-Secret-Token`` header). Always answers 200 so
+    Telegram never disables the webhook over a transient hiccup.
+    """
+    if x_telegram_bot_api_secret_token != secret:
+        return {"ok": True}
+    try:
+        update = await request.json()
+    except ValueError:
+        return {"ok": True}
+    if isinstance(update, dict):
+        await telegram_service.handle_update(session, secret, update)
+    return {"ok": True}
 
 
 @router.get("/bot", response_model=BotOut)

@@ -104,7 +104,7 @@ Dokploy'da qilinadigan ishlar:
 | `GATEWAY_LEASE_SECONDS` | `120` | device claim lease muddati |
 | `GATEWAY_CLAIM_MAX` | `100` | bitta claim'dagi maksimal xabarlar soni |
 | `FRONTEND_URL` | `http://localhost:5173` | e-mail havolalari, OAuth va checkout redirectlari |
-| `PUBLIC_API_URL` | `http://localhost:8000` | OAuth callback URL'ini qurishda |
+| `PUBLIC_API_URL` | `http://localhost:8000` | OAuth callback va Telegram webhook URL'ini qurishda. Telegram obunachilari uchun **ochiq HTTPS** bo'lishi shart (aks holda webhook o'rnatilmaydi, bot ulanadi-yu obunachi kelmaydi) |
 | `GOOGLE_CLIENT_ID/SECRET`, `APPLE_CLIENT_ID/SECRET` | bo'sh | social auth (bo'sh — o'chik) |
 | `SMTP_HOST/PORT/USER/PASSWORD/FROM` | bo'sh | bo'sh bo'lsa xatlar logga yoziladi (dev) |
 | `POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET` | bo'sh | Polar billing (bo'sh — o'chik) |
@@ -145,10 +145,11 @@ Hammasi `/api/v1` prefiksi ostida (probe'lardan tashqari).
 | GET/POST | `/contacts`, `/contacts/groups` | JWT | Kontaktlar va guruhlar CRUD |
 | GET/POST/PUT/DELETE | `/templates` | JWT | Shablonlar (`{var}` avtomatik ajratiladi) |
 | GET | `/telegram/bot` | JWT | Ulangan bot |
-| POST | `/telegram/connect` | JWT | BotFather token bilan ulash |
-| DELETE | `/telegram/bot` | JWT | Uzish (soft delete) |
+| POST | `/telegram/connect` | JWT | BotFather token bilan ulash (token `getMe` orqali tekshiriladi, shifrlangan holda saqlanadi, webhook o'rnatiladi) |
+| DELETE | `/telegram/bot` | JWT | Uzish (webhook o'chiriladi, soft delete) |
 | GET | `/telegram/subscribers`, `/telegram/broadcasts` | JWT | Obunachilar / tarixiy broadcastlar |
-| POST | `/telegram/broadcasts` | JWT | Broadcast yaratish |
+| POST | `/telegram/broadcasts` | JWT | Broadcast — har bir obunachiga haqiqiy `sendMessage` |
+| POST | `/telegram/webhook/{secret}` | Sekret | Telegram update'lari (ochiq; `/start` yuborgan obunachini ro'yxatga oladi) |
 | GET | `/notifications`, `/notifications/unread-count` | JWT | Bildirishnomalar |
 | POST | `/notifications/{id}/read`, `/notifications/read-all` | JWT | O'qildi deb belgilash |
 | GET | `/analytics/overview`, `/analytics/daily` | JWT | Dashboard statistikasi |
