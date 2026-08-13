@@ -86,12 +86,28 @@ def _plan_for_product(product_id: str) -> str | None:
 
 
 async def _polar_post(path: str, payload: dict[str, object]) -> dict[str, object]:
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post(
-            f"{_base_url()}{path}",
-            json=payload,
-            headers={"Authorization": f"Bearer {settings.polar_access_token}"},
-        )
+    # Bind outbound sockets to the IPv4 wildcard so the request never picks a
+    # (frequently broken in containers) IPv6 route to Polar/Cloudflare — that
+    # path connects but never returns, surfacing as an httpx.ReadTimeout.
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+            response = await client.post(
+                f"{_base_url()}{path}",
+                json=payload,
+                headers={"Authorization": f"Bearer {settings.polar_access_token}"},
+            )
+    except httpx.TimeoutException as exc:
+        logger.error("Polar %s timed out: %s", path, exc)
+        raise AppError(
+            "Polar did not respond in time — please try again",
+            code="polar_timeout",
+            status=504,
+        ) from exc
+    except httpx.HTTPError as exc:
+        logger.error("Polar %s transport error: %s", path, exc)
+        raise AppError("Couldn't reach Polar", code="polar_unreachable", status=502) from exc
     if response.status_code not in (200, 201):
         logger.error("Polar %s failed: %s %s", path, response.status_code, response.text[:300])
         raise AppError("Polar request failed", code="polar_error", status=502)

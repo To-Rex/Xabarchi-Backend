@@ -16,6 +16,15 @@ _API_BASE = "https://api.telegram.org"
 _TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 
 
+def _client() -> httpx.AsyncClient:
+    # Force IPv4 egress: broken container IPv6 routes to Telegram connect but
+    # never respond, which would otherwise surface as a ReadTimeout.
+    return httpx.AsyncClient(
+        timeout=_TIMEOUT,
+        transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0"),
+    )
+
+
 class TelegramError(Exception):
     """A Telegram API call returned ``ok: false`` (or was unreachable)."""
 
@@ -28,7 +37,7 @@ class TelegramError(Exception):
 async def _call(token: str, method: str, payload: dict[str, Any] | None = None) -> Any:
     url = f"{_API_BASE}/bot{token}/{method}"
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with _client() as client:
             response = await client.post(url, json=payload or {})
     except httpx.HTTPError as exc:  # network / DNS / timeout
         raise TelegramError(f"Telegram is unreachable: {exc}") from exc
