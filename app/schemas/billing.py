@@ -1,0 +1,28 @@
+"""Billing DTOs: plans and invoices."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+
+from app.domain.enums import InvoiceStatus, PlanId
+from app.schemas.common import CamelModel
+
+
+class PlanOut(CamelModel):
+    id: PlanId
+    monthly_price: int
+    sms_per_month: int
+    max_devices: int
+    api_access: bool
+    priority_support: bool
+
+
+class InvoiceOut(CamelModel):
+    id: uuid.UUID
+    number: str
+    date: datetime
+    amount: int
+    status: InvoiceStatus
+    plan_id: PlanId
+    period: str
