@@ -21,7 +21,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import httpx
 import jwt
@@ -65,11 +65,44 @@ def _ensure_enabled(provider: str) -> None:
         )
 
 
-async def start(provider: str) -> str:
-    """Build the provider consent URL, persisting a one-time ``state``."""
+def _allowed_origins() -> set[str]:
+    """Frontends we're willing to hand a token to — the CORS allowlist plus the
+    default frontend. Reusing CORS_ORIGINS means localhost + prod are covered
+    without a new env var."""
+    origins = {o.rstrip("/") for o in settings.cors_origins if o}
+    origins.add(settings.frontend_url.rstrip("/"))
+    return origins
+
+
+def _resolve_return_origin(requested: str | None) -> str:
+    """Pick where the OAuth flow returns to, restricted to the allowlist.
+
+    ``requested`` may be a full URL (an Origin/Referer header or ?redirect=);
+    it's reduced to scheme://host[:port] and only honored if allow-listed, so
+    this can never become an open redirect. Falls back to FRONTEND_URL.
+    """
+    default = settings.frontend_url.rstrip("/")
+    if not requested:
+        return default
+    parsed = urlsplit(requested)
+    if not parsed.scheme or not parsed.netloc:
+        return default
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return origin if origin in _allowed_origins() else default
+
+
+async def start(provider: str, return_url: str | None = None) -> str:
+    """Build the provider consent URL, persisting a one-time ``state``.
+
+    The (allow-listed) frontend origin to return to is stored alongside the
+    state so the callback can send the user back where they started.
+    """
     _ensure_enabled(provider)
+    origin = _resolve_return_origin(return_url)
     state = secrets.token_urlsafe(24)
-    await get_redis().set(_STATE_KEY.format(state=state), provider, ex=STATE_TTL_SECONDS)
+    await get_redis().set(
+        _STATE_KEY.format(state=state), f"{provider}|{origin}", ex=STATE_TTL_SECONDS
+    )
 
     if provider == "google":
         query = {
@@ -93,10 +126,15 @@ async def start(provider: str) -> str:
     return "https://appleid.apple.com/auth/authorize?" + urlencode(query)
 
 
-async def _consume_state(state: str, provider: str) -> None:
+async def _consume_state(state: str, provider: str) -> str:
+    """Validate & burn the state; return the frontend origin to return to."""
     stored = await get_redis().getdel(_STATE_KEY.format(state=state))
-    if stored != provider:
+    if not stored:
         raise AuthError("OAuth state is invalid or expired")
+    stored_provider, _, origin = stored.partition("|")
+    if stored_provider != provider:
+        raise AuthError("OAuth state is invalid or expired")
+    return origin or settings.frontend_url.rstrip("/")
 
 
 async def _google_profile(code: str) -> Profile:
@@ -172,10 +210,16 @@ async def _apple_profile(code: str) -> Profile:
     )
 
 
-async def complete(session: AsyncSession, provider: str, code: str, state: str) -> User:
-    """Callback half: validate state, fetch the profile, find-or-create."""
+async def complete(
+    session: AsyncSession, provider: str, code: str, state: str
+) -> tuple[User, str]:
+    """Callback half: validate state, fetch the profile, find-or-create.
+
+    Returns ``(user, return_origin)`` — the allow-listed frontend origin the
+    flow should hand the tokens back to.
+    """
     _ensure_enabled(provider)
-    await _consume_state(state, provider)
+    origin = await _consume_state(state, provider)
     profile = await (_google_profile(code) if provider == "google" else _apple_profile(code))
 
     account = await oauth_repo.get_by_subject(session, provider, profile.subject)
@@ -183,7 +227,7 @@ async def complete(session: AsyncSession, provider: str, code: str, state: str) 
         user = await user_repo.get_by_id(session, account.user_id)
         if user is None:
             raise AuthError("Account no longer exists")
-        return user
+        return user, origin
 
     # First sign-in with this identity: attach to the e-mail's account, or
     # create a fresh one (provider-verified e-mail counts as verified).
@@ -203,4 +247,4 @@ async def complete(session: AsyncSession, provider: str, code: str, state: str) 
     elif user.email_verified_at is None:
         user.email_verified_at = datetime.now(UTC)
     await oauth_repo.link(session, user_id=user.id, provider=provider, subject=profile.subject)
-    return user
+    return user, origin

@@ -109,9 +109,15 @@ async def resend_verification(session: DbSession, body: ResendVerificationIn) ->
 
 
 @router.get("/oauth/{provider}/start", include_in_schema=True)
-async def oauth_start(provider: str) -> RedirectResponse:
-    """302 to the provider's consent screen (Google / Apple)."""
-    url = await oauth_service.start(provider)
+async def oauth_start(provider: str, request: Request, redirect: str = "") -> RedirectResponse:
+    """302 to the provider's consent screen (Google / Apple).
+
+    ``?redirect=<origin>`` (or the Referer/Origin header) records where to return
+    the tokens; the service allow-lists it, so localhost and prod each come back
+    to themselves.
+    """
+    return_url = redirect or request.headers.get("referer") or request.headers.get("origin") or ""
+    url = await oauth_service.start(provider, return_url)
     return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
 
 
@@ -122,16 +128,18 @@ async def _oauth_finish(session: DbSession, provider: str, code: str, state: str
     errors land on the same page as ``#error=<code>``.
     """
     try:
-        user = await oauth_service.complete(session, provider, code, state)
+        user, origin = await oauth_service.complete(session, provider, code, state)
     except AppError as exc:
+        # State (which carries the origin) is gone on failure — fall back to
+        # the configured frontend for the error screen.
         return RedirectResponse(
-            f"{settings.frontend_url}/auth/callback#error={quote(exc.code)}",
+            f"{settings.frontend_url.rstrip('/')}/auth/callback#error={quote(exc.code)}",
             status_code=status.HTTP_302_FOUND,
         )
     tokens = auth_service.issue_tokens(user.id)
     fragment = f"accessToken={quote(tokens.access_token)}&refreshToken={quote(tokens.refresh_token)}"
     return RedirectResponse(
-        f"{settings.frontend_url}/auth/callback#{fragment}",
+        f"{origin}/auth/callback#{fragment}",
         status_code=status.HTTP_302_FOUND,
     )
 
