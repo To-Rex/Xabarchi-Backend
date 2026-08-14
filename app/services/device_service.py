@@ -40,12 +40,12 @@ async def pair(session: AsyncSession, user: User, data: DeviceCreateIn) -> tuple
     Returns the device and the FULL token — the only moment it ever exists in
     plaintext; only its hash is stored.
     """
-    subscription_service.assert_active(user)
-    plan = await billing_repo.get_plan(session, user.plan_id)
+    plan_id = subscription_service.effective_plan_id(user)
+    plan = await billing_repo.get_plan(session, plan_id)
     device_count = await device_repo.count_for_user(session, user.id)
     if plan is not None and device_count >= plan.max_devices:
         raise QuotaError(
-            f"Plan '{user.plan_id}' allows at most {plan.max_devices} device(s)"
+            f"Plan '{plan_id}' allows at most {plan.max_devices} device(s)"
         )
     token, token_hash = generate_device_token()
     device = await device_repo.create(
@@ -69,10 +69,9 @@ async def pair_start(user: User) -> tuple[str, int]:
     """Mint a one-time pairing code for the QR the dashboard displays.
 
     The code maps to the user in Redis with a short TTL; scanning phones
-    exchange it for a permanent device token via ``pair_complete``. Gated so a
-    lapsed account can't even render a QR to pair from.
+    exchange it for a permanent device token via ``pair_complete`` (which
+    enforces the plan's device cap).
     """
-    subscription_service.assert_active(user)
     code = secrets.token_urlsafe(24)
     await get_redis().set(
         _PAIR_KEY.format(code=code), str(user.id), ex=PAIR_CODE_TTL_SECONDS

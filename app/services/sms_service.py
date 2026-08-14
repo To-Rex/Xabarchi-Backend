@@ -61,7 +61,6 @@ def sms_segments(text: str) -> int:
 
 async def send(session: AsyncSession, user: User, data: SendIn) -> list[Message]:
     """Validate, meter, and enqueue one text to N recipients."""
-    subscription_service.assert_active(user)
     await check_rate_limit(
         f"sms:send:{user.id}", SEND_RATE_LIMIT, SEND_RATE_WINDOW_SECONDS
     )
@@ -70,10 +69,11 @@ async def send(session: AsyncSession, user: User, data: SendIn) -> list[Message]
     # Dedupe while preserving order — double recipients waste quota silently.
     phones = list(dict.fromkeys(phones))
 
-    plan = await billing_repo.get_plan(session, user.plan_id)
+    plan_id = subscription_service.effective_plan_id(user)
+    plan = await billing_repo.get_plan(session, plan_id)
     if plan is not None and user.sms_sent_this_month + len(phones) > plan.sms_per_month:
         raise QuotaError(
-            f"Monthly SMS quota exceeded ({plan.sms_per_month} on plan '{user.plan_id}')"
+            f"Monthly SMS quota exceeded ({plan.sms_per_month} on plan '{plan_id}')"
         )
 
     device_id: uuid.UUID | None = data.device_id

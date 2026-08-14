@@ -229,13 +229,15 @@ mahsulot xaritasi `POLAR_PRODUCT_BIZNES` / `POLAR_PRODUCT_KORXONA`.
 3. **Customer portal**: `GET /billing/portal` → Polar'ning hosted portal havolasi
    (obunani bekor qilish, karta almashtirish o'sha yerda).
 
-**Hard paywall.** Xabarchi faqat faol pullik obuna bilan ishlaydi. SMS yuborish
-(`POST /messages`, `/public/messages`) va qurilma ulash (`/devices/pair*`) faol
-obuna bo'lmasa **402 `subscription_inactive`** qaytaradi. "Faol" degani: tarif
-`biznes`/`korxona` **va** `plan_expires_at` kelajakda. Muddat tugasa hisob avtomatik
-bloklanadi (har so'rovda tekshiriladi — cron shart emas); davom etish uchun qayta
-sotib olish/yangilash kerak. `/auth/me` javobida `planActive` va `planExpiresAt`
-bor — frontend blok holatini shular orqali ko'rsatishi mumkin.
+**Amaldagi tarif (bepul tier + muddat).** Bepul `start` tarifi doim o'z limiti
+doirasida ishlaydi (1 qurilma, 500 SMS/oy). Pullik tariflar (`biznes`/`korxona`)
+obuna **faol** bo'lganda kattaroq limitlarni ochadi; muddat tugagach hisob
+**bloklanmaydi**, balki `start` (bepul) limitlariga tushadi — yangilaguncha.
+Shu sababli barcha kvota tekshiruvlari (SMS yuborish, qurilma ulash, analitika)
+`subscription_service.effective_plan_id(user)` — ya'ni obuna faol bo'lsa o'sha
+tarif, aks holda `start` — orqali hisoblanadi (har so'rovda, cron shart emas).
+"Faol" degani: `plan_id` `biznes`/`korxona` **va** `plan_expires_at` kelajakda.
+`/auth/me` javobida `planActive` va `planExpiresAt` bor.
 
 Webhook imzosi qo'lda tekshiriladi (HMAC-SHA256, `webhook-id.webhook-timestamp.body`,
 5 daqiqa tolerans) — `POLAR_ACCESS_TOKEN` bo'sh bo'lsa butun integratsiya 503

@@ -1,20 +1,23 @@
-"""The paywall gate: paid features require a live subscription.
+"""Plan resolution for limit enforcement.
 
-Xabarchi is subscription-only — sending SMS and enrolling gateway devices are
-blocked unless the account holds an active paid plan (``User.plan_active``).
-When a plan lapses (``plan_expires_at`` passes) the account is blocked until it
-is re-purchased or renewed, no cron needed: the check is evaluated per request.
+Xabarchi has a free tier: the ``start`` plan always works within its own caps
+(1 device, 500 SMS/month). Paid plans (``biznes``/``korxona``) unlock bigger
+caps while their subscription is live; once it lapses the account falls back to
+``start`` limits — not blocked, just downgraded — until it's renewed.
+
+So every quota check runs against the *effective* plan, resolved here.
 """
 
 from __future__ import annotations
 
-from app.core.exceptions import SubscriptionError
+from app.domain.enums import PlanId
 from app.infrastructure.db.models import User
 
 
-def assert_active(user: User) -> None:
-    """Raise :class:`SubscriptionError` (402) unless the plan is active."""
-    if not user.plan_active:
-        raise SubscriptionError(
-            "An active subscription is required — purchase or renew a plan to continue."
-        )
+def effective_plan_id(user: User) -> str:
+    """The plan whose limits actually apply right now.
+
+    The user's paid plan while its subscription is active; otherwise the free
+    ``start`` plan (covers both brand-new accounts and lapsed paid ones).
+    """
+    return user.plan_id if user.plan_active else PlanId.start.value

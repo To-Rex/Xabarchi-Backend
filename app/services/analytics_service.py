@@ -10,6 +10,7 @@ from app.repositories import billing_repo, device_repo, message_repo
 from app.schemas.analytics import DailyStatOut, OverviewOut
 from app.schemas.device import DeviceOut
 from app.schemas.message import MessageOut
+from app.services import subscription_service
 
 
 async def daily_stats(session: AsyncSession, user: User, days: int = 30) -> list[DailyStatOut]:
@@ -23,7 +24,7 @@ async def overview(session: AsyncSession, user: User) -> OverviewOut:
     devices = await device_repo.list_for_user(session, user.id)
     series = await daily_stats(session, user, days=30)
     recent = await message_repo.recent(session, user.id, limit=6)
-    plan = await billing_repo.get_plan(session, user.plan_id)
+    plan = await billing_repo.get_plan(session, subscription_service.effective_plan_id(user))
 
     delivery_rate = (
         counts["delivered_30d"] / counts["sent_30d"] * 100 if counts["sent_30d"] else 0.0
