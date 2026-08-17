@@ -133,6 +133,9 @@ async def _polar_patch(path: str, payload: dict[str, object]) -> dict[str, objec
 
 # --------------------------------------------------------- discounts / pricing
 
+# Prices across Xabarchi are UZS (integer so'm) — mirror that to Polar.
+_POLAR_CURRENCY = "uzs"
+
 
 async def create_discount(
     *,
@@ -157,7 +160,7 @@ async def create_discount(
     else:
         payload["type"] = "fixed"
         payload["amount"] = max(0, value)
-        payload["currency"] = "usd"
+        payload["currency"] = _POLAR_CURRENCY
     if code:
         payload["code"] = code
     if settings.polar_organization_id:
@@ -202,7 +205,7 @@ async def sync_product_price(plan_id: str, monthly_price: int) -> str:
                     {
                         "amount_type": "fixed",
                         "price_amount": int(monthly_price),
-                        "price_currency": "usd",
+                        "price_currency": _POLAR_CURRENCY,
                     }
                 ]
             },
