@@ -85,9 +85,14 @@ async def overview(session: AsyncSession) -> dict[str, Any]:
 
 
 async def list_users(
-    session: AsyncSession, *, search: str | None, page: int, page_size: int
+    session: AsyncSession,
+    *,
+    search: str | None,
+    page: int,
+    page_size: int,
+    include_deleted: bool = False,
 ) -> tuple[list[User], int]:
-    conditions = [User.deleted_at.is_(None)]
+    conditions = [] if include_deleted else [User.deleted_at.is_(None)]
     if search:
         like = f"%{search.strip()}%"
         conditions.append(

@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     # Polar product IDs mapped to paid plan ids.
     polar_product_biznes: str = ""
     polar_product_korxona: str = ""
+    # Optional org id — some Polar endpoints (discounts) want it explicitly.
+    polar_organization_id: str = ""
 
     @field_validator("cors_origins", "admin_emails", mode="before")
     @classmethod

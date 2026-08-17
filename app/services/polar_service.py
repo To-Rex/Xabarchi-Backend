@@ -85,7 +85,9 @@ def _plan_for_product(product_id: str) -> str | None:
     return None
 
 
-async def _polar_post(path: str, payload: dict[str, object]) -> dict[str, object]:
+async def _polar_request(
+    method: str, path: str, payload: dict[str, object] | None = None
+) -> dict[str, object]:
     # Bind outbound sockets to the IPv4 wildcard so the request never picks a
     # (frequently broken in containers) IPv6 route to Polar/Cloudflare — that
     # path connects but never returns, surfacing as an httpx.ReadTimeout.
@@ -93,25 +95,122 @@ async def _polar_post(path: str, payload: dict[str, object]) -> dict[str, object
     timeout = httpx.Timeout(20.0, connect=10.0)
     try:
         async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
-            response = await client.post(
+            response = await client.request(
+                method,
                 f"{_base_url()}{path}",
                 json=payload,
                 headers={"Authorization": f"Bearer {settings.polar_access_token}"},
             )
     except httpx.TimeoutException as exc:
-        logger.error("Polar %s timed out: %s", path, exc)
+        logger.error("Polar %s %s timed out: %s", method, path, exc)
         raise AppError(
             "Polar did not respond in time — please try again",
             code="polar_timeout",
             status=504,
         ) from exc
     except httpx.HTTPError as exc:
-        logger.error("Polar %s transport error: %s", path, exc)
+        logger.error("Polar %s %s transport error: %s", method, path, exc)
         raise AppError("Couldn't reach Polar", code="polar_unreachable", status=502) from exc
     if response.status_code not in (200, 201):
-        logger.error("Polar %s failed: %s %s", path, response.status_code, response.text[:300])
+        logger.error(
+            "Polar %s %s failed: %s %s", method, path, response.status_code, response.text[:300]
+        )
         raise AppError("Polar request failed", code="polar_error", status=502)
-    return response.json()
+    return response.json() if response.content else {}
+
+
+async def _polar_post(path: str, payload: dict[str, object]) -> dict[str, object]:
+    return await _polar_request("POST", path, payload)
+
+
+async def _polar_get(path: str) -> dict[str, object]:
+    return await _polar_request("GET", path)
+
+
+async def _polar_patch(path: str, payload: dict[str, object]) -> dict[str, object]:
+    return await _polar_request("PATCH", path, payload)
+
+
+# --------------------------------------------------------- discounts / pricing
+
+
+async def create_discount(
+    *,
+    name: str,
+    kind: str,
+    value: int,
+    code: str | None = None,
+    duration: str = "once",
+    plan_id: str | None = None,
+) -> dict[str, object]:
+    """Create a Polar discount.
+
+    ``kind`` is "percentage" (value = percent, 0–100) or "fixed" (value = amount
+    in the currency's minor units). ``plan_id`` optionally restricts it to that
+    plan's product. ``code`` makes it a redeemable coupon; omit for an automatic one.
+    """
+    _ensure_enabled()
+    payload: dict[str, object] = {"name": name, "duration": duration}
+    if kind == "percentage":
+        payload["type"] = "percentage"
+        payload["basis_points"] = max(0, min(100, value)) * 100  # 10% -> 1000
+    else:
+        payload["type"] = "fixed"
+        payload["amount"] = max(0, value)
+        payload["currency"] = "usd"
+    if code:
+        payload["code"] = code
+    if settings.polar_organization_id:
+        payload["organization_id"] = settings.polar_organization_id
+    if plan_id:
+        try:
+            payload["products"] = [_product_for_plan(plan_id)]
+        except AppError:
+            pass
+    return await _polar_post("/v1/discounts/", payload)
+
+
+async def list_discounts() -> list[dict[str, object]]:
+    """List existing Polar discounts (best-effort; empty on any issue)."""
+    _ensure_enabled()
+    org = f"&organization_id={settings.polar_organization_id}" if settings.polar_organization_id else ""
+    data = await _polar_get(f"/v1/discounts/?limit=100{org}")
+    items = data.get("items") if isinstance(data, dict) else None
+    return items if isinstance(items, list) else []
+
+
+async def sync_product_price(plan_id: str, monthly_price: int) -> str:
+    """Best-effort: push a plan's new price to its Polar product.
+
+    Returns a status the admin UI can show — never raises, so a price edit can
+    never break because of Polar. Polar prices are immutable, so this PATCHes the
+    product with a fresh fixed recurring price (Polar archives the previous one).
+    Note: ``monthly_price`` is sent as-is in minor units; verify the currency in
+    Polar if your product isn't priced in the same unit.
+    """
+    if not settings.polar_access_token:
+        return "polar_disabled"
+    try:
+        product_id = _product_for_plan(plan_id)
+    except AppError:
+        return "not_purchasable"
+    try:
+        await _polar_patch(
+            f"/v1/products/{product_id}",
+            {
+                "prices": [
+                    {
+                        "amount_type": "fixed",
+                        "price_amount": int(monthly_price),
+                        "price_currency": "usd",
+                    }
+                ]
+            },
+        )
+        return "synced"
+    except AppError as exc:
+        logger.warning("Polar price sync failed for plan %s: %s", plan_id, exc.code)
+        return f"error:{exc.code}"
 
 
 async def create_checkout(user: User, plan_id: str) -> str:

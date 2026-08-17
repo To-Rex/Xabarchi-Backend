@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, NotFoundError
-from app.infrastructure.db.models import Device, Invoice, Plan, User
+from app.domain.enums import NotificationKind, NotificationSeverity
+from app.infrastructure.db.models import Device, Plan, User
 from app.repositories import admin_repo, billing_repo, user_repo
 from app.schemas.admin import (
     AdminDeviceOut,
@@ -16,9 +17,13 @@ from app.schemas.admin import (
     AdminOverviewOut,
     AdminUserOut,
     AdminUserUpdateIn,
+    DiscountCreateIn,
+    NotifyIn,
+    PlanSyncOut,
     PlanUpdateIn,
 )
 from app.schemas.billing import PlanOut
+from app.services import notification_service, polar_service
 
 
 def _user_out(user: User, device_count: int) -> AdminUserOut:
@@ -38,6 +43,7 @@ def _user_out(user: User, device_count: int) -> AdminUserOut:
         sms_sent_this_month=user.sms_sent_this_month,
         device_count=device_count,
         created_at=user.created_at,
+        deleted_at=user.deleted_at,
     )
 
 
@@ -47,13 +53,66 @@ async def overview(session: AsyncSession) -> AdminOverviewOut:
 
 
 async def list_users(
-    session: AsyncSession, *, search: str | None, page: int, page_size: int
+    session: AsyncSession,
+    *,
+    search: str | None,
+    page: int,
+    page_size: int,
+    include_deleted: bool = False,
 ) -> tuple[list[AdminUserOut], int]:
     users, total = await admin_repo.list_users(
-        session, search=search, page=page, page_size=page_size
+        session, search=search, page=page, page_size=page_size, include_deleted=include_deleted
     )
     counts = await admin_repo.device_counts(session, [u.id for u in users])
     return [_user_out(u, counts.get(u.id, 0)) for u in users], total
+
+
+async def reset_quota(session: AsyncSession, user_id: uuid.UUID) -> AdminUserOut:
+    user = await admin_repo.get_user(session, user_id)
+    if user is None:
+        raise NotFoundError("User not found")
+    await user_repo.update(session, user, {"sms_sent_this_month": 0})
+    counts = await admin_repo.device_counts(session, [user.id])
+    return _user_out(user, counts.get(user.id, 0))
+
+
+async def restore_user(session: AsyncSession, user_id: uuid.UUID) -> AdminUserOut:
+    user = await admin_repo.get_user(session, user_id)
+    if user is None:
+        raise NotFoundError("User not found")
+    if user.deleted_at is not None:
+        await user_repo.update(session, user, {"deleted_at": None})
+    counts = await admin_repo.device_counts(session, [user.id])
+    return _user_out(user, counts.get(user.id, 0))
+
+
+async def notify_user(session: AsyncSession, user_id: uuid.UUID, data: NotifyIn) -> None:
+    user = await admin_repo.get_user(session, user_id)
+    if user is None:
+        raise NotFoundError("User not found")
+    await notification_service.create(
+        session,
+        user.id,
+        kind=NotificationKind.system,
+        severity=NotificationSeverity(data.severity),
+        title={"uz": data.title, "ru": data.title, "en": data.title},
+        body={"uz": data.body, "ru": data.body, "en": data.body},
+    )
+
+
+async def create_discount(data: DiscountCreateIn) -> dict[str, object]:
+    return await polar_service.create_discount(
+        name=data.name,
+        kind=data.kind,
+        value=data.value,
+        code=data.code,
+        duration=data.duration,
+        plan_id=data.plan_id.value if data.plan_id else None,
+    )
+
+
+async def list_discounts() -> list[dict[str, object]]:
+    return await polar_service.list_discounts()
 
 
 async def get_user(session: AsyncSession, user_id: uuid.UUID) -> AdminUserOut:
@@ -150,12 +209,20 @@ async def list_plans(session: AsyncSession) -> list[PlanOut]:
     return [PlanOut.model_validate(p) for p in plans]
 
 
-async def update_plan(session: AsyncSession, plan_id: str, data: PlanUpdateIn) -> PlanOut:
+async def update_plan(session: AsyncSession, plan_id: str, data: PlanUpdateIn) -> PlanSyncOut:
     plan: Plan | None = await billing_repo.get_plan(session, plan_id)
     if plan is None:
         raise NotFoundError("Plan not found")
-    for key, value in data.model_dump(exclude_unset=True).items():
+    fields = data.model_dump(exclude_unset=True)
+    fields.pop("sync_to_polar", None)  # not a Plan column
+    for key, value in fields.items():
         if value is not None:
             setattr(plan, key, value)
     await session.flush()
-    return PlanOut.model_validate(plan)
+
+    # Optionally mirror the new price to the plan's Polar product (best-effort).
+    polar_sync = "skipped"
+    if data.sync_to_polar and "monthly_price" in fields and fields["monthly_price"] is not None:
+        polar_sync = await polar_service.sync_product_price(plan_id, plan.monthly_price)
+
+    return PlanSyncOut(plan=PlanOut.model_validate(plan), polar_sync=polar_sync)

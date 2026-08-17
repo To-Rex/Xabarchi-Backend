@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field
 
 from app.domain.enums import InvoiceStatus, PlanId
+from app.schemas.billing import PlanOut
 from app.schemas.common import CamelModel
 
 
@@ -40,6 +42,7 @@ class AdminUserOut(CamelModel):
     sms_sent_this_month: int
     device_count: int
     created_at: datetime
+    deleted_at: datetime | None
 
 
 class AdminDeviceOut(CamelModel):
@@ -85,3 +88,28 @@ class PlanUpdateIn(CamelModel):
     max_devices: int | None = Field(default=None, ge=0)
     api_access: bool | None = None
     priority_support: bool | None = None
+    # When true, also push the (new) price to the plan's Polar product.
+    sync_to_polar: bool = False
+
+
+class PlanSyncOut(CamelModel):
+    """Plan after an admin update, plus the Polar-sync outcome."""
+
+    plan: PlanOut
+    polar_sync: str  # "synced" | "polar_disabled" | "not_purchasable" | "error:*" | "skipped"
+
+
+class DiscountCreateIn(CamelModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: Literal["percentage", "fixed"] = "percentage"
+    # percentage: 0–100; fixed: amount in the currency's minor units.
+    value: int = Field(ge=0)
+    code: str | None = Field(default=None, max_length=64)
+    duration: Literal["once", "forever", "repeating"] = "once"
+    plan_id: PlanId | None = None
+
+
+class NotifyIn(CamelModel):
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=500)
+    severity: Literal["info", "success", "warn", "error"] = "info"
