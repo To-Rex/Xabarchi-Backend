@@ -112,10 +112,11 @@ async def _polar_request(
         logger.error("Polar %s %s transport error: %s", method, path, exc)
         raise AppError("Couldn't reach Polar", code="polar_unreachable", status=502) from exc
     if response.status_code not in (200, 201):
-        logger.error(
-            "Polar %s %s failed: %s %s", method, path, response.status_code, response.text[:300]
-        )
-        raise AppError("Polar request failed", code="polar_error", status=502)
+        detail = response.text[:400]
+        logger.error("Polar %s %s failed: %s %s", method, path, response.status_code, detail)
+        err = AppError("Polar request failed", code="polar_error", status=502)
+        err.polar_detail = detail  # type: ignore[attr-defined]
+        raise err
     return response.json() if response.content else {}
 
 
@@ -133,8 +134,9 @@ async def _polar_patch(path: str, payload: dict[str, object]) -> dict[str, objec
 
 # --------------------------------------------------------- discounts / pricing
 
-# Prices across Xabarchi are UZS (integer so'm) — mirror that to Polar.
-_POLAR_CURRENCY = "uzs"
+def _currency() -> str:
+    """Currency for Polar prices/discounts (configurable; default UZS)."""
+    return (settings.polar_currency or "uzs").lower()
 
 
 async def create_discount(
@@ -160,7 +162,7 @@ async def create_discount(
     else:
         payload["type"] = "fixed"
         payload["amount"] = max(0, value)
-        payload["currency"] = _POLAR_CURRENCY
+        payload["currency"] = _currency()
     if code:
         payload["code"] = code
     if settings.polar_organization_id:
@@ -205,15 +207,16 @@ async def sync_product_price(plan_id: str, monthly_price: int) -> str:
                     {
                         "amount_type": "fixed",
                         "price_amount": int(monthly_price),
-                        "price_currency": _POLAR_CURRENCY,
+                        "price_currency": _currency(),
                     }
                 ]
             },
         )
         return "synced"
     except AppError as exc:
-        logger.warning("Polar price sync failed for plan %s: %s", plan_id, exc.code)
-        return f"error:{exc.code}"
+        detail = getattr(exc, "polar_detail", "") or exc.code
+        logger.warning("Polar price sync failed for plan %s: %s", plan_id, detail)
+        return f"error:{detail[:200]}"
 
 
 async def create_checkout(user: User, plan_id: str) -> str:

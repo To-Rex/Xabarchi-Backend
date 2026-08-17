@@ -101,14 +101,20 @@ async def notify_user(session: AsyncSession, user_id: uuid.UUID, data: NotifyIn)
 
 
 async def create_discount(data: DiscountCreateIn) -> dict[str, object]:
-    return await polar_service.create_discount(
-        name=data.name,
-        kind=data.kind,
-        value=data.value,
-        code=data.code,
-        duration=data.duration,
-        plan_id=data.plan_id.value if data.plan_id else None,
-    )
+    try:
+        return await polar_service.create_discount(
+            name=data.name,
+            kind=data.kind,
+            value=data.value,
+            code=data.code,
+            duration=data.duration,
+            plan_id=data.plan_id.value if data.plan_id else None,
+        )
+    except AppError as exc:
+        detail = getattr(exc, "polar_detail", "")
+        if detail:
+            raise AppError(f"Polar: {detail[:200]}", code=exc.code, status=exc.status) from exc
+        raise
 
 
 async def list_discounts() -> list[dict[str, object]]:

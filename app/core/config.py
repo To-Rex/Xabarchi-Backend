@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     polar_product_korxona: str = ""
     # Optional org id — some Polar endpoints (discounts) want it explicitly.
     polar_organization_id: str = ""
+    # Currency used when pushing prices/discounts to Polar. Must be one Polar
+    # actually supports (UZS is often NOT supported — then keep it "usd").
+    polar_currency: str = "uzs"
 
     @field_validator("cors_origins", "admin_emails", mode="before")
     @classmethod
