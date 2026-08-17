@@ -139,6 +139,12 @@ def _currency() -> str:
     return (settings.polar_currency or "uzs").lower()
 
 
+def _to_minor(amount: int) -> int:
+    """Xabarchi stores whole so'm; Polar wants minor units (×100, like cents).
+    e.g. 149 000 so'm -> 14 900 000."""
+    return int(amount) * 100
+
+
 async def create_discount(
     *,
     name: str,
@@ -161,7 +167,7 @@ async def create_discount(
         payload["basis_points"] = max(0, min(100, value)) * 100  # 10% -> 1000
     else:
         payload["type"] = "fixed"
-        payload["amount"] = max(0, value)
+        payload["amount"] = _to_minor(max(0, value))
         payload["currency"] = _currency()
     if code:
         payload["code"] = code
@@ -206,7 +212,7 @@ async def sync_product_price(plan_id: str, monthly_price: int) -> str:
                 "prices": [
                     {
                         "amount_type": "fixed",
-                        "price_amount": int(monthly_price),
+                        "price_amount": _to_minor(monthly_price),
                         "price_currency": _currency(),
                     }
                 ]
