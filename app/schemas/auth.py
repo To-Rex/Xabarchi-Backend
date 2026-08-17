@@ -62,6 +62,8 @@ class UserOut(CamelModel):
     created_at: datetime
     timezone: str
     email_verified: bool = False
+    # Admin-panel access (role "admin" or allow-listed e-mail).
+    is_admin: bool = False
 
 
 class ForgotPasswordIn(CamelModel):

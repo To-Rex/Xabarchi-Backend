@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse
 
 from app.api.v1 import (
+    admin,
     analytics,
     apikeys,
     auth,
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
         analytics,
         apikeys,
         billing,
+        admin,
         ws,
     ):
         app.include_router(module.router, prefix=API_V1_PREFIX)

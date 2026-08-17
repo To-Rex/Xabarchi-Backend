@@ -59,6 +59,15 @@ class User(Base, TimestampMixin, SoftDeleteMixin):
             return False
         return self.plan_expires_at is not None and self.plan_expires_at > datetime.now(UTC)
 
+    @property
+    def is_admin(self) -> bool:
+        """Admin-panel access: DB role "admin" or an allow-listed e-mail."""
+        from app.core.config import settings
+
+        return self.role == "admin" or self.email.lower() in {
+            e.lower() for e in settings.admin_emails
+        }
+
 
 # Case-insensitive email uniqueness without requiring the citext extension.
 Index("uq_users_email_lower", func.lower(User.email), unique=True)

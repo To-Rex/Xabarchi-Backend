@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # NoDecode: keep pydantic-settings from JSON-parsing the raw env string;
     # the before-validator below handles the comma-separated form instead.
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:5173"]
+    # E-mails granted admin-panel access (comma-separated). A user is also an
+    # admin if their DB role is "admin" (set from the panel itself).
+    admin_emails: Annotated[list[str], NoDecode] = []
     # Gateway devices claim message batches under a short lease; if a device
     # dies mid-send the lease expiry returns messages to the queue.
     gateway_lease_seconds: int = 120
@@ -68,12 +71,12 @@ class Settings(BaseSettings):
     polar_product_biznes: str = ""
     polar_product_korxona: str = ""
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins", "admin_emails", mode="before")
     @classmethod
-    def _split_cors_origins(cls, value: object) -> object:
+    def _split_csv(cls, value: object) -> object:
         """Accept a comma-separated string (as stored in .env) or a list."""
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
     @property

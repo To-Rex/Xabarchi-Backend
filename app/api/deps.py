@@ -15,7 +15,7 @@ from typing import Annotated
 from fastapi import Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import AuthError
+from app.core.exceptions import AuthError, forbidden
 from app.core.security import API_KEY_PREFIX, decode_token, hash_token
 from app.domain.enums import ApiScope
 from app.infrastructure.db.models import ApiKey, Device, User
@@ -55,6 +55,16 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def get_admin_user(user: CurrentUser) -> User:
+    """Authenticated user who also has admin-panel access."""
+    if not user.is_admin:
+        raise forbidden("Admin access required")
+    return user
+
+
+AdminUser = Annotated[User, Depends(get_admin_user)]
 
 
 async def get_device(
