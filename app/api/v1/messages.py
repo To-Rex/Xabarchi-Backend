@@ -57,6 +57,13 @@ async def resend_message(session: DbSession, user: CurrentUser, message_id: int)
     return MessageOut.model_validate(message)
 
 
+@router.post("/messages/{message_id}/cancel", response_model=MessageOut)
+async def cancel_message(session: DbSession, user: CurrentUser, message_id: int) -> MessageOut:
+    """Cancel a still-queued message so the gateway never sends it."""
+    message = await sms_service.cancel(session, user, message_id)
+    return MessageOut.model_validate(message)
+
+
 @router.post(
     "/public/messages",
     response_model=list[MessageOut],

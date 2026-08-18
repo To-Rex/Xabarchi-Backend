@@ -200,6 +200,27 @@ async def report(
     return await session.scalar(stmt)
 
 
+async def cancel(session: AsyncSession, user_id: uuid.UUID, message_id: int) -> Message | None:
+    """Cancel a still-queued message: queued -> canceled.
+
+    Atomic ``WHERE status='queued'`` so a message already claimed by a device
+    (``sending``) or finished can't be canceled — returns None in that case (or
+    if it isn't the user's).
+    """
+    stmt = (
+        update(Message)
+        .where(
+            Message.user_id == user_id,
+            Message.id == message_id,
+            Message.status == MessageStatus.queued.value,
+        )
+        .values(status=MessageStatus.canceled.value, lease_expires_at=None)
+        .returning(Message)
+        .execution_options(synchronize_session=False)
+    )
+    return await session.scalar(stmt)
+
+
 async def requeue_expired_leases(session: AsyncSession) -> int:
     """Reaper: return dead-device leases to the queue (or fail them out).
 

@@ -130,6 +130,21 @@ async def get_message(session: AsyncSession, user_id: uuid.UUID, message_id: int
 _RANK_TO_PRIORITY: dict[int, SmsPriority] = {rank: prio for prio, rank in PRIORITY_RANK.items()}
 
 
+async def cancel(session: AsyncSession, user: User, message_id: int) -> Message:
+    """Cancel a queued message so it's never sent. Only ``queued`` messages
+    qualify — once a device has claimed it (``sending``) it can't be stopped."""
+    message = await message_repo.cancel(session, user.id, message_id)
+    if message is not None:
+        await publish_event(user.id, "message.updated", _message_payload(message))
+        return message
+    existing = await message_repo.get_for_user(session, user.id, message_id)
+    if existing is None:
+        raise not_found("Message", message_id)
+    raise AppError(
+        "Only queued messages can be canceled", code="not_cancelable", status=409
+    )
+
+
 async def resend(session: AsyncSession, user: User, message_id: int) -> Message:
     """Queue a fresh copy of an existing message to the same recipient.
 

@@ -17,6 +17,7 @@ class MessageStatus(str, Enum):
     sent = "sent"
     delivered = "delivered"
     failed = "failed"
+    canceled = "canceled"
 
 
 class SmsPriority(str, Enum):
