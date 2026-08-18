@@ -145,6 +145,36 @@ async def cancel(session: AsyncSession, user: User, message_id: int) -> Message:
     )
 
 
+async def bulk_action(
+    session: AsyncSession,
+    user: User,
+    ids: list[int],
+    action: str,
+    priority: SmsPriority | None = None,
+) -> int:
+    """Apply an action to many messages at once; returns how many were affected.
+
+    ``cancel`` and ``priority`` touch only still-queued messages; ``delete``
+    removes any of the user's messages permanently.
+    """
+    if action == "cancel":
+        return await message_repo.bulk_cancel(session, user.id, ids)
+    if action == "delete":
+        return await message_repo.bulk_delete(session, user.id, ids)
+    if action == "priority":
+        if priority is None:
+            raise AppError("priority is required", code="priority_required", status=422)
+        return await message_repo.bulk_set_priority(
+            session, user.id, ids, PRIORITY_RANK[priority]
+        )
+    raise AppError(f"Unknown action '{action}'", code="unknown_action", status=422)
+
+
+async def clear_all(session: AsyncSession, user: User, status: str | None = None) -> int:
+    """Delete all of the user's messages (optionally only one status)."""
+    return await message_repo.delete_all(session, user.id, status)
+
+
 async def resend(session: AsyncSession, user: User, message_id: int) -> Message:
     """Queue a fresh copy of an existing message to the same recipient.
 

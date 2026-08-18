@@ -57,6 +57,24 @@ class MessagesPage(CamelModel):
     counts_by_status: dict[str, int]
 
 
+class BulkActionIn(CamelModel):
+    """Apply one action to many messages: cancel/delete (any), or re-prioritize."""
+
+    ids: list[int] = Field(min_length=1, max_length=1000)
+    action: Literal["cancel", "delete", "priority"]
+    priority: SmsPriority | None = None
+
+
+class ClearIn(CamelModel):
+    """Wipe all messages, or only those in one status."""
+
+    status: MessageStatus | None = None
+
+
+class BulkResultOut(CamelModel):
+    affected: int
+
+
 class GatewayClaimIn(CamelModel):
     limit: int = Field(default=50, ge=1)
 

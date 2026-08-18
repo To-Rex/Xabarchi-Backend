@@ -15,7 +15,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
 
-from sqlalchemy import case, func, or_, select, text, tuple_, update
+from sqlalchemy import case, delete, func, or_, select, text, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.enums import FailReason, MessageStatus
@@ -219,6 +219,73 @@ async def cancel(session: AsyncSession, user_id: uuid.UUID, message_id: int) -> 
         .execution_options(synchronize_session=False)
     )
     return await session.scalar(stmt)
+
+
+async def bulk_cancel(session: AsyncSession, user_id: uuid.UUID, ids: list[int]) -> int:
+    """Cancel every still-queued message among ``ids``; returns how many changed."""
+    if not ids:
+        return 0
+    stmt = (
+        update(Message)
+        .where(
+            Message.user_id == user_id,
+            Message.id.in_(ids),
+            Message.status == MessageStatus.queued.value,
+        )
+        .values(status=MessageStatus.canceled.value, lease_expires_at=None)
+        .returning(Message.id)
+        .execution_options(synchronize_session=False)
+    )
+    return len((await session.scalars(stmt)).all())
+
+
+async def bulk_set_priority(
+    session: AsyncSession, user_id: uuid.UUID, ids: list[int], rank: int
+) -> int:
+    """Re-prioritize still-queued messages among ``ids`` (only queued can move)."""
+    if not ids:
+        return 0
+    stmt = (
+        update(Message)
+        .where(
+            Message.user_id == user_id,
+            Message.id.in_(ids),
+            Message.status == MessageStatus.queued.value,
+        )
+        .values(priority=rank)
+        .returning(Message.id)
+        .execution_options(synchronize_session=False)
+    )
+    return len((await session.scalars(stmt)).all())
+
+
+async def bulk_delete(session: AsyncSession, user_id: uuid.UUID, ids: list[int]) -> int:
+    """Permanently delete the given messages; returns how many were removed."""
+    if not ids:
+        return 0
+    stmt = (
+        delete(Message)
+        .where(Message.user_id == user_id, Message.id.in_(ids))
+        .returning(Message.id)
+        .execution_options(synchronize_session=False)
+    )
+    return len((await session.scalars(stmt)).all())
+
+
+async def delete_all(
+    session: AsyncSession, user_id: uuid.UUID, status: str | None = None
+) -> int:
+    """Wipe all of a user's messages (optionally only one status). Returns count."""
+    conditions = [Message.user_id == user_id]
+    if status:
+        conditions.append(Message.status == status)
+    stmt = (
+        delete(Message)
+        .where(*conditions)
+        .returning(Message.id)
+        .execution_options(synchronize_session=False)
+    )
+    return len((await session.scalars(stmt)).all())
 
 
 async def requeue_expired_leases(session: AsyncSession) -> int:
