@@ -101,3 +101,32 @@ async def public_send_messages(
     _, user = principal
     messages = await sms_service.send(session, user, body)
     return [MessageOut.model_validate(m) for m in messages]
+
+
+@router.get(
+    "/public/messages",
+    response_model=MessagesPage,
+    summary="List messages with an API key (scope: sms.read)",
+)
+async def public_list_messages(
+    session: DbSession,
+    principal: Annotated[tuple[ApiKey, User], Depends(require_api_key(ApiScope.sms_read))],
+    status_: Annotated[str | None, Query(alias="status")] = None,
+    search: Annotated[str | None, Query(max_length=200)] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, alias="pageSize")] = 20,
+) -> MessagesPage:
+    """List messages, authenticated by ``X-API-Key`` (scope ``sms.read``).
+
+    Filter by ``status`` to fetch what wasn't delivered: ``failed`` (couldn't be
+    sent) or ``queued`` (still waiting). ``countsByStatus`` gives per-status totals.
+    """
+    _, user = principal
+    items, total, counts = await sms_service.list_messages(
+        session, user.id, status=status_, search=search, page=page, page_size=page_size
+    )
+    return MessagesPage(
+        items=[MessageOut.model_validate(m) for m in items],
+        total=total,
+        counts_by_status=counts,
+    )
