@@ -54,9 +54,12 @@ async def _lease_reaper() -> None:
         try:
             async with async_session_factory() as session:
                 count = await message_repo.requeue_expired_leases(session)
+                promoted = await message_repo.promote_due_scheduled(session)
                 await session.commit()
             if count:
                 logger.info("Lease reaper requeued/failed %d expired message(s)", count)
+            if promoted:
+                logger.info("Lease reaper promoted %d scheduled message(s) to the queue", promoted)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - the reaper must survive anything

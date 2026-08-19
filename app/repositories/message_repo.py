@@ -21,6 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.enums import FailReason, MessageStatus
 from app.infrastructure.db.models import Message
 
+# Messages that haven't gone to a device yet can still be canceled.
+_CANCELABLE = [MessageStatus.queued.value, MessageStatus.scheduled.value]
+
 
 class EnqueueItem(TypedDict, total=False):
     """One row for :func:`enqueue_many` (`text_` maps SQL column "text")."""
@@ -31,19 +34,39 @@ class EnqueueItem(TypedDict, total=False):
     priority: int
     device_id: uuid.UUID | None
     contact_id: uuid.UUID | None
+    scheduled_at: datetime | None
 
 
 # ----------------------------------------------------------------- enqueue
 
 
 async def enqueue_many(
-    session: AsyncSession, user_id: uuid.UUID, items: list[EnqueueItem]
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    items: list[EnqueueItem],
+    status: str = MessageStatus.queued.value,
 ) -> list[Message]:
-    """Bulk-insert queued messages and return the persisted rows."""
-    messages = [Message(user_id=user_id, status=MessageStatus.queued.value, **item) for item in items]
+    """Bulk-insert messages (``queued`` or ``scheduled``) and return the rows."""
+    messages = [Message(user_id=user_id, status=status, **item) for item in items]
     session.add_all(messages)
     await session.flush()
     return messages
+
+
+async def promote_due_scheduled(session: AsyncSession) -> int:
+    """Move scheduled messages whose time has come into the live queue."""
+    stmt = (
+        update(Message)
+        .where(
+            Message.status == MessageStatus.scheduled.value,
+            Message.scheduled_at.is_not(None),
+            Message.scheduled_at <= func.now(),
+        )
+        .values(status=MessageStatus.queued.value)
+        .returning(Message.id)
+        .execution_options(synchronize_session=False)
+    )
+    return len((await session.scalars(stmt)).all())
 
 
 # ------------------------------------------------------------------ listing
@@ -203,16 +226,16 @@ async def report(
 async def cancel(session: AsyncSession, user_id: uuid.UUID, message_id: int) -> Message | None:
     """Cancel a still-queued message: queued -> canceled.
 
-    Atomic ``WHERE status='queued'`` so a message already claimed by a device
-    (``sending``) or finished can't be canceled — returns None in that case (or
-    if it isn't the user's).
+    Atomic ``WHERE status IN (queued, scheduled)`` so a message already claimed
+    by a device (``sending``) or finished can't be canceled — returns None in
+    that case (or if it isn't the user's).
     """
     stmt = (
         update(Message)
         .where(
             Message.user_id == user_id,
             Message.id == message_id,
-            Message.status == MessageStatus.queued.value,
+            Message.status.in_(_CANCELABLE),
         )
         .values(status=MessageStatus.canceled.value, lease_expires_at=None)
         .returning(Message)
@@ -230,7 +253,7 @@ async def bulk_cancel(session: AsyncSession, user_id: uuid.UUID, ids: list[int])
         .where(
             Message.user_id == user_id,
             Message.id.in_(ids),
-            Message.status == MessageStatus.queued.value,
+            Message.status.in_(_CANCELABLE),
         )
         .values(status=MessageStatus.canceled.value, lease_expires_at=None)
         .returning(Message.id)

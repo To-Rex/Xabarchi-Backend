@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,6 +83,15 @@ async def send(session: AsyncSession, user: User, data: SendIn) -> list[Message]
         if device is None:
             raise not_found("Device", device_id)
 
+    # Scheduled for the future? Park it as "scheduled"; the reaper promotes it
+    # to "queued" when the time comes. A past/absent time sends right away.
+    scheduled_at = data.scheduled_at
+    if scheduled_at is not None and scheduled_at <= datetime.now(UTC):
+        scheduled_at = None
+    status = (
+        MessageStatus.scheduled.value if scheduled_at is not None else MessageStatus.queued.value
+    )
+
     segments = sms_segments(data.text)
     contact_by_phone = await contact_repo.find_by_phones(session, user.id, phones)
     items: list[EnqueueItem] = [
@@ -92,10 +102,11 @@ async def send(session: AsyncSession, user: User, data: SendIn) -> list[Message]
             priority=PRIORITY_RANK[data.priority],
             device_id=device_id,
             contact_id=contact_by_phone.get(phone),
+            scheduled_at=scheduled_at,
         )
         for phone in phones
     ]
-    messages = await message_repo.enqueue_many(session, user.id, items)
+    messages = await message_repo.enqueue_many(session, user.id, items, status=status)
     await user_repo.increment_sms_sent(session, user, len(messages))
 
     for message in messages:

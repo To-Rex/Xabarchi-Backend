@@ -12,6 +12,7 @@ from enum import Enum
 class MessageStatus(str, Enum):
     """Lifecycle of an outbound SMS."""
 
+    scheduled = "scheduled"
     queued = "queued"
     sending = "sending"
     sent = "sent"

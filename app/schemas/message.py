@@ -22,6 +22,8 @@ class SendIn(CamelModel):
     text: str = Field(min_length=1, max_length=1000)
     device_id: uuid.UUID | None = None
     priority: SmsPriority = SmsPriority.transactional
+    # Future time to send at; if omitted or in the past, sent right away.
+    scheduled_at: datetime | None = None
 
 
 class MessageOut(CamelModel):
@@ -37,6 +39,7 @@ class MessageOut(CamelModel):
     device_id: uuid.UUID | None = None
     segments: int
     created_at: datetime
+    scheduled_at: datetime | None = None
     sent_at: datetime | None = None
     delivered_at: datetime | None = None
     fail_reason: FailReason | None = None

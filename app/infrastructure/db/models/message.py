@@ -78,6 +78,9 @@ class Message(Base):
     attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=3)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When set (and status "scheduled"), the reaper promotes it to "queued" only
+    # once this time passes — that's how scheduled/future sends work.
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fail_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
